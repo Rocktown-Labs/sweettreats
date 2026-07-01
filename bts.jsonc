@@ -1,0 +1,31 @@
+// Better-T-Stack
+//
+// Website: https://www.better-t-stack.dev/
+// Stack Builder: https://www.better-t-stack.dev/new
+// Analytics: https://www.better-t-stack.dev/analytics
+// Showcase: https://www.better-t-stack.dev/showcase
+// Sponsor: https://github.com/sponsors/AmanVarshney01
+//
+// Add new addons with: bun create better-t-stack add
+// This file is safe to delete
+
+{
+  "$schema": "https://r2.better-t-stack.dev/schema.json",
+  "version": "3.35.1",
+  "createdAt": "2026-07-01T02:12:21.698Z",
+  "reproducibleCommand": "bun create better-t-stack@latest sweettreats --frontend tanstack-start --backend self --runtime none --database sqlite --orm drizzle --api none --auth clerk --payments none --addons lefthook oxlint vite-plus --examples none --db-setup d1 --web-deploy cloudflare --server-deploy none --git --package-manager bun --install",
+  "database": "sqlite",
+  "orm": "drizzle",
+  "backend": "self",
+  "runtime": "none",
+  "frontend": ["tanstack-start"],
+  "addons": ["lefthook", "oxlint", "vite-plus"],
+  "examples": [],
+  "auth": "clerk",
+  "payments": "none",
+  "packageManager": "bun",
+  "dbSetup": "d1",
+  "api": "none",
+  "webDeploy": "cloudflare",
+  "serverDeploy": "none",
+}

@@ -1,0 +1,3 @@
+{
+  "extends": "@sweettreats/config/tsconfig.base.json"
+}
