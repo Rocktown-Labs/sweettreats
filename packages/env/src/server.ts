@@ -1,3 +1,4 @@
+/* oxlint-disable */
 /// <reference types="@cloudflare/workers-types" />
 /// <reference path="../env.d.ts" />
 // For Cloudflare Workers, env is accessed via cloudflare:workers module

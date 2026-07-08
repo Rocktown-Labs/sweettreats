@@ -9,28 +9,57 @@ import { defineConfig } from "vite-plus";
 const alchemyConfigPath = fileURLToPath(
   new URL("./.alchemy/local/wrangler.jsonc", import.meta.url),
 );
-const shouldUseAlchemy = existsSync(alchemyConfigPath);
+const isTest =
+  process.env.NODE_ENV === "test" ||
+  process.env.VITEST === "true" ||
+  process.env.E2E === "true" ||
+  process.argv.some((arg) => arg.includes("test"));
+const shouldUseAlchemy = existsSync(alchemyConfigPath) && !isTest;
+const shouldUseWorkersRuntime = shouldUseAlchemy || process.env.WORKERS_BUILD === "true";
 const cloudflareWorkersShimPath = fileURLToPath(
-  new URL("../../packages/env/src/cloudflare-local.ts", import.meta.url),
+  new URL("./src/utils/cloudflare-browser-shim.ts", import.meta.url),
 );
-const cloudflareWorkersAlias = shouldUseAlchemy
-  ? {}
-  : {
-      "cloudflare:workers": cloudflareWorkersShimPath,
-    };
 
-export default defineConfig({
-  server: {
-    port: 3001,
-  },
-  resolve: {
-    tsconfigPaths: true,
-    alias: cloudflareWorkersAlias,
-  },
-  plugins: [
-    tailwindcss(),
-    tanstackStart(),
-    viteReact(),
-    ...(shouldUseAlchemy ? [alchemy({ configPath: alchemyConfigPath })] : []),
-  ],
+export default defineConfig(() => {
+  const cloudflareWorkersAlias = shouldUseWorkersRuntime
+    ? {
+        "node:fs": fileURLToPath(new URL("./src/utils/worker-fs-stub.ts", import.meta.url)),
+        "node:path": fileURLToPath(new URL("./src/utils/worker-path-stub.ts", import.meta.url)),
+      }
+    : {};
+
+  return {
+    server: {
+      port: 3001,
+    },
+    test: {
+      environment: "node",
+      include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    },
+    resolve: {
+      tsconfigPaths: true,
+      alias: cloudflareWorkersAlias,
+    },
+    plugins: [
+      {
+        name: "sweet-treats-cloudflare-workers-resolver",
+        enforce: "pre",
+        resolveId(id, _importer, options) {
+          if (id !== "cloudflare:workers") {
+            return null;
+          }
+
+          if (shouldUseWorkersRuntime && options?.ssr) {
+            return { id, external: true };
+          }
+
+          return cloudflareWorkersShimPath;
+        },
+      },
+      tailwindcss(),
+      tanstackStart(),
+      viteReact(),
+      ...(shouldUseAlchemy ? [alchemy({ configPath: alchemyConfigPath })] : []),
+    ],
+  };
 });

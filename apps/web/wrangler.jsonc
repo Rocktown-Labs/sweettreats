@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sweettreats",
+  "main": "./worker.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat_v2"],
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+  },
+  "observability": {
+    "enabled": true,
+  },
+  "vars": {
+    "ADMIN_EMAILS": "stlr@demo.com",
+    "CORS_ORIGIN": "http://localhost:8787",
+    "BETTER_AUTH_SECRET": "local_dev_secret_32_characters_long_min",
+    "BETTER_AUTH_URL": "http://localhost:8787",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sweettreats-db",
+      "migrations_dir": "../../packages/db/src/migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "sweettreats-media",
+    },
+  ],
+}

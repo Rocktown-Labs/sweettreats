@@ -1,9 +1,14 @@
-import { ClerkProvider } from "@clerk/tanstack-react-start";
 import { Toaster } from "@sweettreats/ui/components/sonner";
+import "@fontsource-variable/fraunces";
+import "@fontsource-variable/inter";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { HeadContent, Outlet, Scripts, createRootRouteWithContext } from "@tanstack/react-router";
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
+import { useState } from "react";
 
 import Header from "../components/header";
+import { CartProvider } from "../lib/cart";
+import { getAuthRuntimeConfig } from "../lib/auth";
 
 import appCss from "../index.css?url";
 
@@ -20,7 +25,11 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         content: "width=device-width, initial-scale=1",
       },
       {
-        title: "My App",
+        title: "Sweet Treats LR",
+      },
+      {
+        name: "description",
+        content: "Sweet Treats LR mobile-first cookie shop and pickup ordering.",
       },
     ],
     links: [
@@ -28,29 +37,44 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         rel: "stylesheet",
         href: appCss,
       },
+      {
+        rel: "icon",
+        href: "/sweet-treats-logo.png",
+      },
     ],
   }),
 
+  loader: () => getAuthRuntimeConfig(),
   component: RootDocument,
 });
 
 function RootDocument() {
+  const [queryClient] = useState(() => new QueryClient());
+  const app = (
+    <QueryClientProvider client={queryClient}>
+      <CartProvider>
+        <div className="app-shell">
+          <Header />
+          <Outlet />
+        </div>
+      </CartProvider>
+    </QueryClientProvider>
+  );
+
   return (
-    <ClerkProvider>
-      <html lang="en" className="dark">
-        <head>
-          <HeadContent />
-        </head>
-        <body>
-          <div className="grid h-svh grid-rows-[auto_1fr]">
-            <Header />
-            <Outlet />
-          </div>
-          <Toaster richColors />
-          <TanStackRouterDevtools position="bottom-left" />
-          <Scripts />
-        </body>
-      </html>
-    </ClerkProvider>
+    <html lang="en">
+      <head>
+        <HeadContent />
+        {import.meta.env.DEV ? (
+          <script src="https://unpkg.com/react-scan/dist/auto.global.js" async />
+        ) : null}
+      </head>
+      <body>
+        {app}
+        <Toaster richColors />
+        {import.meta.env.DEV ? <TanStackRouterDevtools position="bottom-left" /> : null}
+        <Scripts />
+      </body>
+    </html>
   );
 }
