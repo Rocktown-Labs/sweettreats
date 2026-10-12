@@ -56,17 +56,17 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         content: "#fff8e7",
       },
       {
-        title: "Sweet Treats LR • Fresh-Baked Cookies & Pickup in Little Rock",
+        title: "Sweet Treats LR • Cookies, Cakes, Shakes & More",
       },
       {
         name: "description",
         content:
-          "Artisanal fresh-baked cookies, cookie jars, and daily treats in Little Rock, Arkansas. Order online today for quick pickup across Downtown and West Little Rock!",
+          "Artisanal fresh-baked cookies, custom cakes, signature shakes, and handcrafted treats in Little Rock and North Little Rock. Order online today for quick pickup!",
       },
       {
         name: "keywords",
         content:
-          "cookies Little Rock, bakery Little Rock AR, Sweet Treats LR, fresh baked cookies, Little Rock dessert pickup, brown butter chocolate chip, red velvet cookie",
+          "cookies Little Rock, cakes Little Rock, shakes Little Rock, bakery North Little Rock, Sweet Treats LR, fresh baked cookies, Central Arkansas dessert pickup",
       },
       // Open Graph
       {
@@ -75,12 +75,12 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
       },
       {
         property: "og:title",
-        content: "Sweet Treats LR • Fresh-Baked Cookies & Pickup in Little Rock",
+        content: "Sweet Treats LR • Cookies, Cakes, Shakes & More",
       },
       {
         property: "og:description",
         content:
-          "Artisanal fresh-baked cookies, cookie jars, and daily treats in Little Rock, Arkansas. Order online today for quick pickup across Downtown and West Little Rock!",
+          "Artisanal fresh-baked cookies, custom cakes, signature shakes, and handcrafted treats in Little Rock and North Little Rock. Order online today for quick pickup!",
       },
       {
         property: "og:type",
@@ -112,7 +112,8 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
       },
       {
         property: "og:image:alt",
-        content: "Sweet Treats LR - Fresh Baked Cookies Order Today",
+        content:
+          "Sweet Treats LR - Cookies, Cakes, Shakes & More in Little Rock & North Little Rock",
       },
       {
         property: "og:locale",
@@ -133,12 +134,12 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
       },
       {
         name: "twitter:title",
-        content: "Sweet Treats LR • Fresh-Baked Cookies & Pickup in Little Rock",
+        content: "Sweet Treats LR • Cookies, Cakes, Shakes & More",
       },
       {
         name: "twitter:description",
         content:
-          "Artisanal fresh-baked cookies, cookie jars, and daily treats in Little Rock, Arkansas. Order online today for quick pickup!",
+          "Artisanal cookies, custom cakes, signature shakes, and daily treats in Little Rock and North Little Rock. Order online for pickup!",
       },
       {
         name: "twitter:image",
@@ -146,7 +147,7 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
       },
       {
         name: "twitter:image:alt",
-        content: "Sweet Treats LR - Fresh Baked Cookies Order Today",
+        content: "Sweet Treats LR - Cookies, Cakes, Shakes & More",
       },
     ],
     links: [

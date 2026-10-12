@@ -1,0 +1,189 @@
+import * as React from "react";
+import { render } from "@react-email/render";
+import { getResendClient } from "./client";
+import AdminOrderNotificationEmail, {
+  type AdminOrderNotificationEmailProps,
+} from "../emails/admin-order-notification";
+import CustomerOrderConfirmationEmail, {
+  type CustomerOrderConfirmationEmailProps,
+} from "../emails/customer-order-confirmation";
+import MagicLinkEmail, { type MagicLinkEmailProps } from "../emails/magic-link";
+
+export interface SendEmailResult {
+  success: boolean;
+  id?: string;
+  error?: string;
+  mocked?: boolean;
+}
+
+const DEFAULT_FROM_EMAIL = "Sweet Treats LR <orders@orders.sweettreatslr.com>";
+
+export async function sendAdminOrderEmail(
+  props: AdminOrderNotificationEmailProps,
+  options?: {
+    to?: string | string[];
+    from?: string;
+    apiKey?: string;
+  },
+): Promise<SendEmailResult> {
+  const recipients = options?.to
+    ? Array.isArray(options.to)
+      ? options.to
+      : [options.to]
+    : ["lauryan0311@gmail.com", "admin@sweettreatslr.com"];
+
+  const from = options?.from || DEFAULT_FROM_EMAIL;
+  const resend = getResendClient(options?.apiKey);
+
+  const element = React.createElement(AdminOrderNotificationEmail, props);
+  const html = await render(element);
+  const text = await render(element, { plainText: true });
+
+  const subject = `New Order #${props.orderNumber} • ${props.customerName} ($${(props.subtotalCents / 100).toFixed(2)})`;
+
+  if (!resend) {
+    console.info(
+      JSON.stringify({
+        event: "email.admin_order_notification_simulated",
+        orderId: props.orderId,
+        orderNumber: props.orderNumber,
+        recipients,
+        subject,
+      }),
+    );
+    return { success: true, mocked: true };
+  }
+
+  const { data, error } = await resend.emails.send(
+    {
+      from,
+      to: recipients,
+      subject,
+      html,
+      text,
+    },
+    {
+      idempotencyKey: `admin-order/${props.orderId}`,
+    },
+  );
+
+  if (error) {
+    console.error(
+      JSON.stringify({
+        event: "email.admin_order_notification_failed",
+        orderId: props.orderId,
+        error: error.message,
+      }),
+    );
+    return { success: false, error: error.message };
+  }
+
+  return { success: true, id: data?.id };
+}
+
+export async function sendCustomerOrderEmail(
+  props: CustomerOrderConfirmationEmailProps,
+  options: {
+    to: string;
+    from?: string;
+    apiKey?: string;
+  },
+): Promise<SendEmailResult> {
+  const from = options.from || DEFAULT_FROM_EMAIL;
+  const resend = getResendClient(options.apiKey);
+
+  const element = React.createElement(CustomerOrderConfirmationEmail, props);
+  const html = await render(element);
+  const text = await render(element, { plainText: true });
+
+  const subject = `Your Sweet Treats LR Order #${props.orderNumber} is Confirmed!`;
+
+  if (!resend) {
+    console.info(
+      JSON.stringify({
+        event: "email.customer_order_confirmation_simulated",
+        orderId: props.orderId,
+        orderNumber: props.orderNumber,
+        to: options.to,
+        subject,
+      }),
+    );
+    return { success: true, mocked: true };
+  }
+
+  const { data, error } = await resend.emails.send(
+    {
+      from,
+      to: options.to,
+      subject,
+      html,
+      text,
+    },
+    {
+      idempotencyKey: `customer-order/${props.orderId}`,
+    },
+  );
+
+  if (error) {
+    console.error(
+      JSON.stringify({
+        event: "email.customer_order_confirmation_failed",
+        orderId: props.orderId,
+        error: error.message,
+      }),
+    );
+    return { success: false, error: error.message };
+  }
+
+  return { success: true, id: data?.id };
+}
+
+export async function sendMagicLinkEmail(
+  props: MagicLinkEmailProps,
+  options: {
+    to: string;
+    from?: string;
+    apiKey?: string;
+  },
+): Promise<SendEmailResult> {
+  const from = options.from || DEFAULT_FROM_EMAIL;
+  const resend = getResendClient(options.apiKey);
+
+  const element = React.createElement(MagicLinkEmail, props);
+  const html = await render(element);
+  const text = await render(element, { plainText: true });
+
+  const subject = "Your Sign-In Link for Sweet Treats LR";
+
+  if (!resend) {
+    console.info(
+      JSON.stringify({
+        event: "email.magic_link_simulated",
+        to: options.to,
+        url: props.url,
+      }),
+    );
+    return { success: true, mocked: true };
+  }
+
+  const { data, error } = await resend.emails.send({
+    from,
+    to: options.to,
+    subject,
+    html,
+    text,
+  });
+
+  if (error) {
+    console.error(
+      JSON.stringify({
+        event: "email.magic_link_failed",
+        to: options.to,
+        error: error.message,
+      }),
+    );
+    return { success: false, error: error.message };
+  }
+
+  return { success: true, id: data?.id };
+}

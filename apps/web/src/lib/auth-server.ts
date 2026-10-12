@@ -4,6 +4,8 @@ import { createDb } from "@sweettreats/db";
 import * as schema from "@sweettreats/db/schema/index";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { stripe } from "@better-auth/stripe";
+import { magicLink } from "better-auth/plugins";
+import { sendMagicLinkEmail } from "@sweettreats/email";
 import Stripe from "stripe";
 import { env } from "@sweettreats/env/server";
 
@@ -23,6 +25,9 @@ export function getAuth(): ReturnType<typeof betterAuth> {
       ? new Stripe(stripeSecretKey, { apiVersion: "2023-10-16" as any })
       : null;
 
+    const googleClientId = readEnv("GOOGLE_CLIENT_ID");
+    const googleClientSecret = readEnv("GOOGLE_CLIENT_SECRET");
+
     authInstance = betterAuth({
       baseURL: readEnv("BETTER_AUTH_URL") || undefined,
       secret: readEnv("BETTER_AUTH_SECRET") || undefined,
@@ -38,7 +43,30 @@ export function getAuth(): ReturnType<typeof betterAuth> {
       emailAndPassword: {
         enabled: true,
       },
+      socialProviders:
+        googleClientId && googleClientSecret
+          ? {
+              google: {
+                clientId: googleClientId,
+                clientSecret: googleClientSecret,
+              },
+            }
+          : undefined,
       plugins: [
+        magicLink({
+          sendMagicLink: async ({ email, url }) => {
+            await sendMagicLinkEmail(
+              { url, email },
+              {
+                to: email,
+                apiKey: readEnv("RESEND_API_KEY"),
+                from:
+                  readEnv("RESEND_FROM_EMAIL") ||
+                  "Sweet Treats LR <orders@orders.sweettreatslr.com>",
+              },
+            );
+          },
+        }),
         ...(stripeClient
           ? [
               stripe({
@@ -58,10 +86,25 @@ export function getAuth(): ReturnType<typeof betterAuth> {
 
 export function adminEmails() {
   const envEmails = (env as Record<string, any>).ADMIN_EMAILS ?? process.env.ADMIN_EMAILS ?? "";
-  return String(envEmails)
+  const list = String(envEmails)
     .split(",")
     .map((email) => email.trim().toLowerCase())
     .filter(Boolean);
+
+  const defaultAdmins = [
+    "lauryan0311@gmail.com",
+    "admin@sweettreatslr.com",
+    "stlr@demo.com",
+    "cg@rocktownlabs.com",
+  ];
+
+  for (const adm of defaultAdmins) {
+    if (!list.includes(adm)) {
+      list.push(adm);
+    }
+  }
+
+  return list;
 }
 
 export async function currentUserEmail() {

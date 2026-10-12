@@ -45,12 +45,22 @@ export const web = Cloudflare.Website.Vite(
         ),
         ADMIN_EMAILS: Config.withDefault(
           Config.String("ADMIN_EMAILS"),
-          "stlr@demo.com,cg@rocktownlabs.com",
+          "lauryan0311@gmail.com,admin@sweettreatslr.com,stlr@demo.com,cg@rocktownlabs.com",
         ),
         BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
         BETTER_AUTH_URL: Config.withDefault(
           Config.String("BETTER_AUTH_URL"),
           isProd ? "https://sweettreatslr.com" : `https://${stack.stage}.sweettreatslr.com`,
+        ),
+        RESEND_API_KEY: Config.withDefault(Config.Redacted("RESEND_API_KEY"), Redacted.make("")),
+        RESEND_FROM_EMAIL: Config.withDefault(
+          Config.String("RESEND_FROM_EMAIL"),
+          "Sweet Treats LR <orders@orders.sweettreatslr.com>",
+        ),
+        GOOGLE_CLIENT_ID: Config.withDefault(Config.String("GOOGLE_CLIENT_ID"), ""),
+        GOOGLE_CLIENT_SECRET: Config.withDefault(
+          Config.Redacted("GOOGLE_CLIENT_SECRET"),
+          Redacted.make(""),
         ),
         STRIPE_SECRET_KEY: Config.withDefault(
           Config.Redacted("STRIPE_SECRET_KEY"),

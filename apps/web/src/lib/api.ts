@@ -15,6 +15,7 @@ import { z } from "zod";
 import Stripe from "stripe";
 
 import { adminEmails } from "./auth-server";
+import { sendOrderNotifications } from "./order-emails";
 
 function getStripeClient() {
   const stripeSecretKey = (env as any).STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY || "";
@@ -233,8 +234,8 @@ export type PickupLocation = typeof pickupLocations.$inferSelect;
 export const seedPickupLocations: PickupLocation[] = [
   {
     id: "loc-downtown",
-    name: "Main Bakery - Downtown Little Rock",
-    address: "400 President Clinton Ave, Little Rock, AR 72201",
+    name: "Little Rock Pickup (LR)",
+    address: "Downtown Little Rock (River Market area), Little Rock, AR",
     instructions: "Pick up at the front counter. Curbside pickup available upon request.",
     phone: "(501) 555-0142",
     active: true,
@@ -244,8 +245,8 @@ export const seedPickupLocations: PickupLocation[] = [
   },
   {
     id: "loc-west-lr",
-    name: "West Little Rock Partner Pickup",
-    address: "11525 Cantrell Rd, Little Rock, AR 72212",
+    name: "North Little Rock Pickup (NLR)",
+    address: "North Little Rock (Argenta / Main St District), North Little Rock, AR",
     instructions: "Partner pickup desk. State your name and Sweet Treats order number.",
     phone: "(501) 555-0188",
     active: true,
@@ -268,6 +269,31 @@ async function getOrCreatePickupLocations(db: ReturnType<typeof createDb>) {
         return seedPickupLocations;
       } catch {
         return seedPickupLocations;
+      }
+    }
+
+    // Auto-migrate legacy names to official Little Rock (LR) and North Little Rock (NLR)
+    for (const loc of existing) {
+      if (loc.id === "loc-downtown" && loc.name !== "Little Rock Pickup (LR)") {
+        await db
+          .update(pickupLocations)
+          .set({
+            name: "Little Rock Pickup (LR)",
+            address: "Downtown Little Rock (River Market area), Little Rock, AR",
+          })
+          .where(eq(pickupLocations.id, "loc-downtown"));
+        loc.name = "Little Rock Pickup (LR)";
+        loc.address = "Downtown Little Rock (River Market area), Little Rock, AR";
+      } else if (loc.id === "loc-west-lr" && loc.name !== "North Little Rock Pickup (NLR)") {
+        await db
+          .update(pickupLocations)
+          .set({
+            name: "North Little Rock Pickup (NLR)",
+            address: "North Little Rock (Argenta / Main St District), North Little Rock, AR",
+          })
+          .where(eq(pickupLocations.id, "loc-west-lr"));
+        loc.name = "North Little Rock Pickup (NLR)";
+        loc.address = "North Little Rock (Argenta / Main St District), North Little Rock, AR";
       }
     }
 
@@ -518,6 +544,42 @@ export const createOrder = createServerFn({ method: "POST" })
 
       if (stripe) {
         try {
+          // Ensure all line items are synced to Stripe
+          for (const line of lines) {
+            if (!line.item.stripePriceId) {
+              try {
+                let prodId = line.item.stripeProductId;
+                if (!prodId) {
+                  const prod = await stripe.products.create({
+                    name: line.item.name,
+                    description: line.item.description || undefined,
+                  });
+                  prodId = prod.id;
+                }
+                const pr = await stripe.prices.create({
+                  product: prodId,
+                  unit_amount: line.item.priceCents,
+                  currency: "usd",
+                });
+                line.item.stripeProductId = prodId;
+                line.item.stripePriceId = pr.id;
+                await db
+                  .update(menuItems)
+                  .set({
+                    stripeProductId: prodId,
+                    stripePriceId: pr.id,
+                    updatedAt: sql`CURRENT_TIMESTAMP`,
+                  })
+                  .where(eq(menuItems.id, line.item.id));
+              } catch (err) {
+                logger.warn("stripe.item_auto_sync_fallback", {
+                  itemId: line.item.id,
+                  error: String(err),
+                });
+              }
+            }
+          }
+
           const session = await stripe.checkout.sessions.create({
             payment_method_types: ["card"],
             line_items: lines.map((line) => {
@@ -624,6 +686,10 @@ export const createOrder = createServerFn({ method: "POST" })
         dispatchNote: `Call location (${pickupLocationName}) to confirm ticket. Future: automated location routing.`,
       });
 
+      if (!checkoutUrl) {
+        await sendOrderNotifications(orderId);
+      }
+
       return { orderId, orderNumber, checkoutUrl };
     } catch (caught) {
       await Promise.all(
@@ -657,7 +723,16 @@ export const getOrder = createServerFn({ method: "GET" })
         try {
           const session = await stripe.checkout.sessions.retrieve(data.sessionId);
           if (session.payment_status === "paid") {
-            await db.update(orders).set({ status: "confirmed" }).where(eq(orders.id, data.id));
+            await db
+              .update(orders)
+              .set({
+                status: "confirmed",
+                paymentStatus: "paid",
+                checkoutProvider: "stripe",
+              })
+              .where(eq(orders.id, data.id));
+
+            await sendOrderNotifications(data.id);
 
             order = await db.query.orders.findFirst({
               where: eq(orders.id, data.id),
@@ -810,7 +885,7 @@ export const saveMenuItem = createServerFn({ method: "POST" })
               createNewPrice = true;
             }
           }
-          if (createNewPrice) {
+          if (createNewPrice || !stripePriceId) {
             const price = await stripe.prices.create({
               product: stripeProductId,
               unit_amount: data.priceCents,
@@ -864,6 +939,65 @@ export const saveMenuItem = createServerFn({ method: "POST" })
 
     return { id };
   });
+
+export const syncAllItemsToStripe = createServerFn({ method: "POST" }).handler(async () => {
+  await requireAdmin();
+  const stripe = getStripeClient();
+  if (!stripe) {
+    return { success: false, message: "Stripe is not configured in this environment." };
+  }
+
+  const db = dbRequired();
+  const items = await db.select().from(menuItems);
+  let synced = 0;
+
+  for (const item of items) {
+    try {
+      let prodId = item.stripeProductId;
+      if (!prodId) {
+        const prod = await stripe.products.create({
+          name: item.name,
+          description: item.description || undefined,
+        });
+        prodId = prod.id;
+      } else {
+        await stripe.products.update(prodId, {
+          name: item.name,
+          description: item.description || undefined,
+        });
+      }
+
+      let priceId = item.stripePriceId;
+      if (!priceId) {
+        const pr = await stripe.prices.create({
+          product: prodId,
+          unit_amount: item.priceCents,
+          currency: "usd",
+        });
+        priceId = pr.id;
+      }
+
+      await db
+        .update(menuItems)
+        .set({
+          stripeProductId: prodId,
+          stripePriceId: priceId,
+          updatedAt: sql`CURRENT_TIMESTAMP`,
+        })
+        .where(eq(menuItems.id, item.id));
+
+      synced++;
+    } catch (err) {
+      logger.error("stripe.sync_all_failed_item", {
+        itemId: item.id,
+        error: String(err),
+      });
+    }
+  }
+
+  logger.info("stripe.sync_all_completed", { synced, total: items.length });
+  return { success: true, synced, total: items.length };
+});
 
 export const uploadMenuPhoto = createServerFn({ method: "POST" })
   .validator((data: unknown) => uploadSchema.parse(data))

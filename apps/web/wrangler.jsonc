@@ -12,7 +12,7 @@
     "enabled": true,
   },
   "vars": {
-    "ADMIN_EMAILS": "stlr@demo.com,cg@rocktownlabs.com",
+    "ADMIN_EMAILS": "lauryan0311@gmail.com,admin@sweettreatslr.com,stlr@demo.com,cg@rocktownlabs.com",
     "CORS_ORIGIN": "http://localhost:8787",
     "BETTER_AUTH_SECRET": "local_dev_secret_32_characters_long_min",
     "BETTER_AUTH_URL": "http://localhost:8787",

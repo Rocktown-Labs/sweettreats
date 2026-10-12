@@ -22,6 +22,7 @@
     "@fontsource-variable/inter": "^5.2.8",
     "@libsql/client": "catalog:",
     "@sweettreats/db": "workspace:*",
+    "@sweettreats/email": "workspace:*",
     "@sweettreats/env": "workspace:*",
     "@sweettreats/ui": "workspace:*",
     "@tailwindcss/vite": "^4.3.1",

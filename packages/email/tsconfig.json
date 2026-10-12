@@ -1,0 +1,13 @@
+{
+  "extends": "@sweettreats/config/tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "paths": {
+      "@sweettreats/email/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "emails/**/*.tsx"],
+  "exclude": ["node_modules"]
+}

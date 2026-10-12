@@ -39,18 +39,61 @@ function useActivePath() {
     to === "/admin" ? pathname === "/admin" : pathname === to || pathname.startsWith(`${to}/`);
 }
 
+import { authClient } from "../lib/auth-client";
+
 /**
  * Admin chrome. Desktop gets the shadcn sidebar; phones get a native-style bottom tab bar
  * (CSS decides which one is visible so there is no JS device sniffing or layout flash).
  */
 export function AdminShell({ children }: { children: ReactNode }) {
+  const { data: session } = authClient.useSession();
+  const isDemoSession = session?.user?.email?.toLowerCase() === "stlr@demo.com";
+
   return (
     <SidebarProvider
       className="page admin-page"
       style={{ "--sidebar-width": "14rem" } as CSSProperties}
     >
       <AdminSidebar />
-      <main className="admin-content">{children}</main>
+      <main className="admin-content">
+        {isDemoSession ? (
+          <div
+            role="status"
+            style={{
+              margin: "0 0 16px 0",
+              padding: "12px 16px",
+              backgroundColor: "#fff8e7",
+              border: "1px solid #f6c453",
+              borderRadius: "10px",
+              fontSize: "0.88rem",
+              color: "#5c4939",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "12px",
+              flexWrap: "wrap",
+            }}
+          >
+            <div>
+              <strong>Demo Administrator Account:</strong> You are logged in as{" "}
+              <code>stlr@demo.com</code>. Live order notifications are dispatched to{" "}
+              <strong>lauryan0311@gmail.com</strong>.
+            </div>
+            <Link
+              to="/sign-in"
+              style={{
+                fontSize: "0.82rem",
+                fontWeight: 700,
+                color: "#241408",
+                textDecoration: "underline",
+              }}
+            >
+              Switch Account
+            </Link>
+          </div>
+        ) : null}
+        {children}
+      </main>
       <AdminTabBar />
     </SidebarProvider>
   );

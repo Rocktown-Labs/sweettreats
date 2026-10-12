@@ -1,7 +1,9 @@
-import { Link, Outlet, createFileRoute, useRouterState } from "@tanstack/react-router";
-import { Plus } from "lucide-react";
+import { Link, Outlet, createFileRoute, useRouter, useRouterState } from "@tanstack/react-router";
+import { Plus, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
 
-import { getAdminDashboard } from "../lib/api";
+import { getAdminDashboard, syncAllItemsToStripe } from "../lib/api";
 import { formatMoney, imageUrl } from "../lib/format";
 
 export const Route = createFileRoute("/admin/items")({
@@ -10,6 +12,8 @@ export const Route = createFileRoute("/admin/items")({
 });
 
 function AdminItemsPage() {
+  const router = useRouter();
+  const [isSyncing, setSyncing] = useState(false);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   if (pathname !== "/admin/items") {
     return <Outlet />;
@@ -26,6 +30,23 @@ function AdminItemsPage() {
     return a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
   });
 
+  const handleSyncToStripe = async () => {
+    setSyncing(true);
+    try {
+      const res = await syncAllItemsToStripe();
+      if (res.success) {
+        toast.success(`Successfully synced ${res.synced} items to Stripe!`);
+        await router.invalidate();
+      } else {
+        toast.error(res.message || "Failed to sync items to Stripe.");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not sync items to Stripe.");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <div className="admin-main">
       <div className="section-head admin-heading">
@@ -33,10 +54,22 @@ function AdminItemsPage() {
           <p className="eyebrow">Admin</p>
           <h1 className="page-title">Items</h1>
         </div>
-        <Link to="/admin/items/$id" params={{ id: "new" }} className="primary-button">
-          <Plus size={18} aria-hidden="true" />
-          Add item
-        </Link>
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isSyncing}
+            onClick={handleSyncToStripe}
+            style={{ display: "flex", alignItems: "center", gap: "6px" }}
+          >
+            <RefreshCw size={16} aria-hidden="true" />
+            <span>{isSyncing ? "Syncing to Stripe..." : "Sync to Stripe"}</span>
+          </button>
+          <Link to="/admin/items/$id" params={{ id: "new" }} className="primary-button">
+            <Plus size={18} aria-hidden="true" />
+            Add item
+          </Link>
+        </div>
       </div>
       <section className="admin-list" aria-label="Menu items">
         {sorted.map((item) => (

@@ -1,0 +1,29 @@
+{
+  "name": "@sweettreats/email",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./emails/*": "./emails/*.tsx"
+  },
+  "scripts": {
+    "dev": "email dev --dir emails --port 3001",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@react-email/components": "^0.0.33",
+    "@react-email/render": "^1.0.5",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "resend": "^4.1.2"
+  },
+  "devDependencies": {
+    "@sweettreats/config": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "react-email": "^3.0.7",
+    "typescript": "catalog:"
+  }
+}
