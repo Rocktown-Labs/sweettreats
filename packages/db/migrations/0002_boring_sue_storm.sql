@@ -1,4 +1,4 @@
-CREATE TABLE `user` (
+CREATE TABLE IF NOT EXISTS `user` (
 	`id` text PRIMARY KEY NOT NULL,
 	`name` text NOT NULL,
 	`email` text NOT NULL,
@@ -8,9 +8,9 @@ CREATE TABLE `user` (
 	`updated_at` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `user_email_unique` ON `user` (`email`);
+CREATE UNIQUE INDEX IF NOT EXISTS `user_email_unique` ON `user` (`email`);
 --> statement-breakpoint
-CREATE TABLE `session` (
+CREATE TABLE IF NOT EXISTS `session` (
 	`id` text PRIMARY KEY NOT NULL,
 	`expires_at` integer NOT NULL,
 	`token` text NOT NULL,
@@ -22,9 +22,9 @@ CREATE TABLE `session` (
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `session_token_unique` ON `session` (`token`);
+CREATE UNIQUE INDEX IF NOT EXISTS `session_token_unique` ON `session` (`token`);
 --> statement-breakpoint
-CREATE TABLE `account` (
+CREATE TABLE IF NOT EXISTS `account` (
 	`id` text PRIMARY KEY NOT NULL,
 	`account_id` text NOT NULL,
 	`provider_id` text NOT NULL,
@@ -41,7 +41,7 @@ CREATE TABLE `account` (
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE TABLE `verification` (
+CREATE TABLE IF NOT EXISTS `verification` (
 	`id` text PRIMARY KEY NOT NULL,
 	`identifier` text NOT NULL,
 	`value` text NOT NULL,
@@ -52,8 +52,9 @@ CREATE TABLE `verification` (
 --> statement-breakpoint
 ALTER TABLE `orders` ADD COLUMN `user_id` text REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null;
 --> statement-breakpoint
-CREATE INDEX `orders_user_idx` ON `orders` (`user_id`);
+CREATE INDEX IF NOT EXISTS `orders_user_idx` ON `orders` (`user_id`);
 --> statement-breakpoint
 DROP INDEX IF EXISTS `orders_clerk_user_idx`;
 --> statement-breakpoint
 ALTER TABLE `orders` DROP COLUMN `clerk_user_id`;
+
