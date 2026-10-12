@@ -9,6 +9,28 @@ import { getMenuItem } from "../lib/api";
 
 export const Route = createFileRoute("/item/$id")({
   loader: ({ params }) => getMenuItem({ data: params.id }),
+  head: ({ loaderData }) => {
+    const title = loaderData ? `${loaderData.name} • Sweet Treats LR` : "Cookie • Sweet Treats LR";
+    const description = loaderData
+      ? loaderData.description
+      : "Fresh baked cookie in Little Rock, Arkansas.";
+    const image = loaderData?.imageKey
+      ? imageUrl(loaderData.imageKey)
+      : "https://sweettreatslr.com/og-image.png";
+    return {
+      meta: [
+        { title },
+        { name: "description", content: description },
+        { property: "og:title", content: title },
+        { property: "og:description", content: description },
+        { property: "og:image", content: image },
+        { name: "twitter:card", content: "summary_large_image" },
+        { name: "twitter:title", content: title },
+        { name: "twitter:description", content: description },
+        { name: "twitter:image", content: image },
+      ],
+    };
+  },
   component: ItemPage,
 });
 

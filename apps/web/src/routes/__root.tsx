@@ -13,6 +13,34 @@ import appCss from "../index.css?url";
 
 export interface RouterAppContext {}
 
+const bakerySchema = {
+  "@context": "https://schema.org",
+  "@type": "Bakery",
+  name: "Sweet Treats LR",
+  image: "https://sweettreatslr.com/og-image.png",
+  logo: "https://sweettreatslr.com/sweet-treats-logo.png",
+  url: "https://sweettreatslr.com",
+  description:
+    "Artisanal fresh-baked cookies, cookie jars, and daily treats in Little Rock, Arkansas. Order online today for quick pickup across Downtown and West Little Rock!",
+  priceRange: "$",
+  servesCuisine: ["Bakery", "Cookies", "Desserts"],
+  address: {
+    "@type": "PostalAddress",
+    addressLocality: "Little Rock",
+    addressRegion: "AR",
+    addressCountry: "US",
+  },
+  openingHoursSpecification: [
+    {
+      "@type": "OpeningHoursSpecification",
+      dayOfWeek: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+      opens: "11:00",
+      closes: "23:00",
+    },
+  ],
+  sameAs: ["https://instagram.com/sweettreatslr"],
+};
+
 export const Route = createRootRouteWithContext<RouterAppContext>()({
   head: () => ({
     meta: [
@@ -28,11 +56,97 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         content: "#fff8e7",
       },
       {
-        title: "Sweet Treats LR",
+        title: "Sweet Treats LR • Fresh-Baked Cookies & Pickup in Little Rock",
       },
       {
         name: "description",
-        content: "Sweet Treats LR mobile-first cookie shop and pickup ordering.",
+        content:
+          "Artisanal fresh-baked cookies, cookie jars, and daily treats in Little Rock, Arkansas. Order online today for quick pickup across Downtown and West Little Rock!",
+      },
+      {
+        name: "keywords",
+        content:
+          "cookies Little Rock, bakery Little Rock AR, Sweet Treats LR, fresh baked cookies, Little Rock dessert pickup, brown butter chocolate chip, red velvet cookie",
+      },
+      // Open Graph
+      {
+        property: "og:site_name",
+        content: "Sweet Treats LR",
+      },
+      {
+        property: "og:title",
+        content: "Sweet Treats LR • Fresh-Baked Cookies & Pickup in Little Rock",
+      },
+      {
+        property: "og:description",
+        content:
+          "Artisanal fresh-baked cookies, cookie jars, and daily treats in Little Rock, Arkansas. Order online today for quick pickup across Downtown and West Little Rock!",
+      },
+      {
+        property: "og:type",
+        content: "website",
+      },
+      {
+        property: "og:url",
+        content: "https://sweettreatslr.com",
+      },
+      {
+        property: "og:image",
+        content: "https://sweettreatslr.com/og-image.png",
+      },
+      {
+        property: "og:image:secure_url",
+        content: "https://sweettreatslr.com/og-image.png",
+      },
+      {
+        property: "og:image:type",
+        content: "image/png",
+      },
+      {
+        property: "og:image:width",
+        content: "1200",
+      },
+      {
+        property: "og:image:height",
+        content: "630",
+      },
+      {
+        property: "og:image:alt",
+        content: "Sweet Treats LR - Fresh Baked Cookies Order Today",
+      },
+      {
+        property: "og:locale",
+        content: "en_US",
+      },
+      // Twitter Card
+      {
+        name: "twitter:card",
+        content: "summary_large_image",
+      },
+      {
+        name: "twitter:site",
+        content: "@sweettreatslr",
+      },
+      {
+        name: "twitter:creator",
+        content: "@sweettreatslr",
+      },
+      {
+        name: "twitter:title",
+        content: "Sweet Treats LR • Fresh-Baked Cookies & Pickup in Little Rock",
+      },
+      {
+        name: "twitter:description",
+        content:
+          "Artisanal fresh-baked cookies, cookie jars, and daily treats in Little Rock, Arkansas. Order online today for quick pickup!",
+      },
+      {
+        name: "twitter:image",
+        content: "https://sweettreatslr.com/og-image.png",
+      },
+      {
+        name: "twitter:image:alt",
+        content: "Sweet Treats LR - Fresh Baked Cookies Order Today",
       },
     ],
     links: [
@@ -41,8 +155,22 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         href: appCss,
       },
       {
+        rel: "canonical",
+        href: "https://sweettreatslr.com",
+      },
+      {
         rel: "icon",
         href: "/sweet-treats-logo.png",
+      },
+      {
+        rel: "apple-touch-icon",
+        href: "/sweet-treats-logo.png",
+      },
+    ],
+    scripts: [
+      {
+        type: "application/ld+json",
+        children: JSON.stringify(bakerySchema),
       },
     ],
   }),
