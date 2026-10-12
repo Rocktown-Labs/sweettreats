@@ -6,7 +6,8 @@ export function hasClerkAuthConfig() {
 
 export function isAdminPreviewMode() {
   const runtimeEnv = env as unknown as Record<string, unknown>;
-  return runtimeEnv.ADMIN_PREVIEW_MODE === "1" && !hasClerkAuthConfig();
+  const isPreview = runtimeEnv.ADMIN_PREVIEW_MODE === "1" || process.env.ADMIN_PREVIEW_MODE === "1";
+  return Boolean(isPreview && !hasClerkAuthConfig());
 }
 
 export function isAdminAuthDisabled() {

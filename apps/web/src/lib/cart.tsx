@@ -18,6 +18,8 @@ export type CartLine = CartMenuItem & {
 
 type CartContextValue = {
   lines: CartLine[];
+  /** False until the saved cart has been read from localStorage on the client. */
+  ready: boolean;
   count: number;
   subtotalCents: number;
   addItem: (item: CartMenuItem, quantity?: number) => void;
@@ -113,8 +115,18 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     const count = lines.reduce((sum, line) => sum + line.quantity, 0);
     const subtotalCents = lines.reduce((sum, line) => sum + line.quantity * line.priceCents, 0);
 
-    return { lines, count, subtotalCents, addItem, removeItem, increase, decrease, clear };
-  }, [addItem, clear, decrease, increase, lines, removeItem]);
+    return {
+      lines,
+      ready: hasLoaded,
+      count,
+      subtotalCents,
+      addItem,
+      removeItem,
+      increase,
+      decrease,
+      clear,
+    };
+  }, [addItem, clear, decrease, hasLoaded, increase, lines, removeItem]);
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 }

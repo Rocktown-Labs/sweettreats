@@ -4,6 +4,7 @@ import { z } from "zod";
 import { toast } from "sonner";
 
 import { authClient } from "../lib/auth-client";
+import { authErrorMessage, caughtAuthMessage, safeRedirect } from "../lib/auth-ui";
 
 export const Route = createFileRoute("/sign-in")({
   validateSearch: z.object({
@@ -17,27 +18,31 @@ function SignInPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
   const [isLoading, setLoading] = useState(false);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (isLoading) {
+      return;
+    }
+
+    setError("");
     setLoading(true);
 
     try {
-      const { error } = await authClient.signIn.email({
-        email,
-        password,
-        callbackURL: redirect ?? "/admin",
-      });
+      const { error: authError } = await authClient.signIn.email({ email, password });
 
-      if (error) {
-        toast.error(error.message || "Failed to sign in. Please check your credentials.");
-      } else {
-        toast.success("Welcome back!");
-        navigate({ to: redirect ?? "/admin" });
+      if (authError) {
+        setError(authErrorMessage(authError, "Failed to sign in. Please check your credentials."));
+        return;
       }
+
+      toast.success("Welcome back!");
+      // Everyone lands back on the storefront unless they were sent here from a protected page.
+      await navigate({ to: safeRedirect(redirect), replace: true });
     } catch (caught) {
-      toast.error(caught instanceof Error ? caught.message : "An unexpected error occurred.");
+      setError(caughtAuthMessage(caught, "An unexpected error occurred."));
     } finally {
       setLoading(false);
     }
@@ -60,16 +65,33 @@ function SignInPage() {
           Welcome back
         </h1>
 
-        <form onSubmit={handleSubmit} style={{ display: "grid", gap: "16px", width: "100%" }}>
+        <form
+          onSubmit={handleSubmit}
+          style={{ display: "grid", gap: "16px", width: "100%" }}
+          aria-busy={isLoading}
+        >
+          {error ? (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+
           <label className="field">
             <span>Email Address</span>
             <input
               type="email"
+              name="email"
               required
+              autoComplete="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              enterKeyHint="next"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
               disabled={isLoading}
+              aria-invalid={error ? true : undefined}
             />
           </label>
 
@@ -77,11 +99,15 @@ function SignInPage() {
             <span>Password</span>
             <input
               type="password"
+              name="password"
               required
+              autoComplete="current-password"
+              enterKeyHint="go"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
               disabled={isLoading}
+              aria-invalid={error ? true : undefined}
             />
           </label>
 

@@ -1,5 +1,4 @@
 import { createDb } from "@sweettreats/db";
-import { getAuth } from "./auth-server";
 import {
   dailyMenuItems,
   menuItems,
@@ -21,7 +20,6 @@ function getStripeClient() {
 }
 
 import { logger } from "./logger";
-import { isAdminAuthDisabled, isAdminPreviewMode } from "./clerk-env";
 
 const cartLineSchema = z.object({
   id: z.string().min(1),
@@ -32,8 +30,8 @@ const checkoutSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
   phone: z.string().regex(/^\+?[0-9()\-\s]{7,20}$/, "Enter a valid phone number."),
-  pickupDate: z.string().min(10),
-  pickupTime: z.string().min(4),
+  pickupDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Choose a valid pickup date."),
+  pickupTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Choose a valid pickup time."),
   notes: z.string().max(500).optional().default(""),
   items: z.array(cartLineSchema).min(1),
 });
@@ -229,42 +227,13 @@ function dbRequired() {
 }
 
 async function currentUserEmail() {
-  const { getRequestHeaders } = await import("@tanstack/react-start/server");
-  const headers = getRequestHeaders();
-  const session = await getAuth().api.getSession({ headers });
-  if (!session) {
-    return { userId: null, email: null, role: null };
-  }
-
-  const email = session.user.email;
-  const allowed = adminEmails();
-  const isAdmin = email ? allowed.includes(email.toLowerCase()) : false;
-  const role = isAdmin ? "admin" : null;
-
-  return { userId: session.user.id, email, role };
+  const { currentUserEmail: getUserEmail } = await import("./auth-server");
+  return getUserEmail();
 }
 
-function adminEmails() {
-  return String(env.ADMIN_EMAILS ?? "")
-    .split(",")
-    .map((email) => email.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-export async function requireAdmin() {
-  if (isAdminAuthDisabled() || isAdminPreviewMode()) {
-    return;
-  }
-
-  const { email, role, userId } = await currentUserEmail();
-  const allowed = adminEmails();
-  const emailAllowed = email ? allowed.includes(email.toLowerCase()) : false;
-  const roleAllowed = role === "admin" || role === "owner";
-
-  if (!emailAllowed && !roleAllowed) {
-    logger.warn("admin.access_denied", { email, role, userId });
-    throw new Error("Admin access required");
-  }
+async function requireAdmin() {
+  const { requireAdmin: checkAdmin } = await import("./auth-server");
+  await checkAdmin();
 }
 
 export const getMenu = createServerFn({ method: "GET" }).handler(async () => {
@@ -543,6 +512,9 @@ export const getAdminOrder = createServerFn({ method: "GET" })
   .validator((id: string) => id)
   .handler(async ({ data: id }) => {
     await requireAdmin();
+    if (!hasDatabase()) {
+      return null;
+    }
     const order = await dbRequired().query.orders.findFirst({
       where: eq(orders.id, id),
       with: { items: true },
@@ -595,6 +567,15 @@ export const getAccountOrder = createServerFn({ method: "GET" })
 
 export const getAdminDashboard = createServerFn({ method: "GET" }).handler(async () => {
   await requireAdmin();
+  if (!hasDatabase()) {
+    return {
+      items: seedMenu,
+      recentOrders: [],
+      todaysMenu: [],
+      shopDays: [],
+      statuses: orderStatuses,
+    };
+  }
   const db = dbRequired();
   const [items, recentOrders, todaysMenu, shopDays] = await Promise.all([
     db.select().from(menuItems).orderBy(asc(menuItems.sortOrder), asc(menuItems.name)),

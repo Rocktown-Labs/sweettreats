@@ -4,6 +4,7 @@ import { z } from "zod";
 import { toast } from "sonner";
 
 import { authClient } from "../lib/auth-client";
+import { authErrorMessage, caughtAuthMessage, safeRedirect } from "../lib/auth-ui";
 
 export const Route = createFileRoute("/sign-up")({
   validateSearch: z.object({
@@ -12,34 +13,38 @@ export const Route = createFileRoute("/sign-up")({
   component: SignUpPage,
 });
 
+const MIN_PASSWORD_LENGTH = 8;
+
 function SignUpPage() {
   const { redirect } = Route.useSearch();
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
   const [isLoading, setLoading] = useState(false);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (isLoading) {
+      return;
+    }
+
+    setError("");
     setLoading(true);
 
     try {
-      const { error } = await authClient.signUp.email({
-        email,
-        password,
-        name,
-        callbackURL: redirect ?? "/admin",
-      });
+      const { error: authError } = await authClient.signUp.email({ email, password, name });
 
-      if (error) {
-        toast.error(error.message || "Failed to create account.");
-      } else {
-        toast.success("Account created successfully!");
-        navigate({ to: redirect ?? "/admin" });
+      if (authError) {
+        setError(authErrorMessage(authError, "Failed to create account."));
+        return;
       }
+
+      toast.success("Account created successfully!");
+      await navigate({ to: safeRedirect(redirect), replace: true });
     } catch (caught) {
-      toast.error(caught instanceof Error ? caught.message : "An unexpected error occurred.");
+      setError(caughtAuthMessage(caught, "An unexpected error occurred."));
     } finally {
       setLoading(false);
     }
@@ -62,12 +67,25 @@ function SignUpPage() {
           Create an account
         </h1>
 
-        <form onSubmit={handleSubmit} style={{ display: "grid", gap: "16px", width: "100%" }}>
+        <form
+          onSubmit={handleSubmit}
+          style={{ display: "grid", gap: "16px", width: "100%" }}
+          aria-busy={isLoading}
+        >
+          {error ? (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+
           <label className="field">
             <span>Full Name</span>
             <input
               type="text"
+              name="name"
               required
+              autoComplete="name"
+              enterKeyHint="next"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Your Name"
@@ -79,7 +97,13 @@ function SignUpPage() {
             <span>Email Address</span>
             <input
               type="email"
+              name="email"
               required
+              autoComplete="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              enterKeyHint="next"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
@@ -91,12 +115,20 @@ function SignUpPage() {
             <span>Password</span>
             <input
               type="password"
+              name="password"
               required
+              minLength={MIN_PASSWORD_LENGTH}
+              autoComplete="new-password"
+              enterKeyHint="go"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
               disabled={isLoading}
+              aria-describedby="password-hint"
             />
+            <small id="password-hint" className="field-hint">
+              At least {MIN_PASSWORD_LENGTH} characters.
+            </small>
           </label>
 
           <button

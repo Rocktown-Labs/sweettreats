@@ -1,6 +1,5 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
 
-import { AdminNav } from "../components/admin-nav";
 import { getAdminDashboard } from "../lib/api";
 import { formatMoney } from "../lib/format";
 
@@ -51,47 +50,44 @@ function AdminCustomersPage() {
   const sortedCustomers = [...customers.values()].sort((a, b) => b.totalCents - a.totalCents);
 
   return (
-    <main className="page admin-page">
-      <AdminNav />
-      <div className="admin-main">
-        <div className="section-head admin-heading">
-          <div>
-            <p className="eyebrow">Admin</p>
-            <h1 className="page-title">Customers</h1>
-          </div>
+    <div className="admin-main">
+      <div className="section-head admin-heading">
+        <div>
+          <p className="eyebrow">Admin</p>
+          <h1 className="page-title">Customers</h1>
         </div>
-        <section className="admin-list" aria-label="Customers">
-          {sortedCustomers.map((customer) => (
-            <article
-              className="admin-list-row customer-list-row"
-              key={customer.email || customer.phone}
-            >
-              <div className="customer-avatar" aria-hidden="true">
-                {customer.name.slice(0, 1).toUpperCase()}
-              </div>
-              <div>
-                <div className="admin-row-title">
-                  <strong>{customer.name}</strong>
-                  <span>{formatMoney(customer.totalCents)}</span>
-                </div>
-                <p className="muted">
-                  {customer.email} · {customer.phone}
-                </p>
-                <div className="admin-row-meta">
-                  <span>{customer.orderCount} orders</span>
-                  <span>Last pickup {customer.lastPickup}</span>
-                  <Link to="/admin/orders/$id" params={{ id: customer.lastOrderId }}>
-                    Latest order
-                  </Link>
-                </div>
-              </div>
-            </article>
-          ))}
-          {sortedCustomers.length === 0 ? (
-            <section className="panel">No customers yet.</section>
-          ) : null}
-        </section>
       </div>
-    </main>
+      <section className="admin-list" aria-label="Customers">
+        {sortedCustomers.map((customer) => (
+          <article
+            className="admin-list-row customer-list-row"
+            key={customer.email || customer.phone}
+          >
+            <div className="customer-avatar" aria-hidden="true">
+              {customer.name.slice(0, 1).toUpperCase()}
+            </div>
+            <div>
+              <div className="admin-row-title">
+                <strong>{customer.name}</strong>
+                <span>{formatMoney(customer.totalCents)}</span>
+              </div>
+              <p className="muted">
+                {customer.email} · {customer.phone}
+              </p>
+              <div className="admin-row-meta">
+                <span>{customer.orderCount} orders</span>
+                <span>Last pickup {customer.lastPickup}</span>
+                <Link to="/admin/orders/$id" params={{ id: customer.lastOrderId }}>
+                  Latest order
+                </Link>
+              </div>
+            </div>
+          </article>
+        ))}
+        {sortedCustomers.length === 0 ? (
+          <section className="panel">No customers yet.</section>
+        ) : null}
+      </section>
+    </div>
   );
 }

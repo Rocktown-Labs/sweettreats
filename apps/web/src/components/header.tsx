@@ -1,5 +1,6 @@
 import { Link, useNavigate, useLoaderData } from "@tanstack/react-router";
 import { ShoppingBag } from "lucide-react";
+import { toast } from "sonner";
 
 import { useCart } from "../lib/cart";
 import { authClient } from "../lib/auth-client";
@@ -40,9 +41,10 @@ export default function Header() {
 }
 
 function HeaderAuthControls() {
+  const cart = useCart();
   const { data: session, isPending } = authClient.useSession();
   const navigate = useNavigate();
-  const rootData = useLoaderData({ from: "__root__", strict: false }) as { adminEmails?: string[] };
+  const rootData = useLoaderData({ strict: false }) as { adminEmails?: string[] } | undefined;
 
   if (isPending) {
     return (
@@ -53,24 +55,36 @@ function HeaderAuthControls() {
   }
 
   if (session?.user) {
-    const isAdmin =
-      session.user.email && rootData?.adminEmails?.includes(session.user.email.toLowerCase());
+    const isAdmin = Boolean(
+      session.user.email && rootData?.adminEmails?.includes(session.user.email.toLowerCase()),
+    );
     return (
       <>
-        {isAdmin && (
+        {/* Admins manage orders from the admin area, so they don't get the customer Orders tab. */}
+        {isAdmin ? (
           <Link to="/admin" className="text-button account-link">
             Admin
           </Link>
+        ) : (
+          <Link to="/account/orders" className="text-button account-link">
+            Orders
+          </Link>
         )}
-        <Link to="/account/orders" className="text-button account-link">
-          Orders
-        </Link>
         <button
           type="button"
           className="text-button"
           onClick={async () => {
-            await authClient.signOut();
-            navigate({ to: "/" });
+            cart.clear();
+            try {
+              const { error } = await authClient.signOut();
+              if (error) {
+                toast.error(error.message || "Could not log out. Please try again.");
+                return;
+              }
+              await navigate({ to: "/" });
+            } catch {
+              toast.error("Could not log out. Check your connection and try again.");
+            }
           }}
         >
           Log out

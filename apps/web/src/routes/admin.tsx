@@ -1,7 +1,7 @@
 import { Link, Outlet, createFileRoute, useRouterState } from "@tanstack/react-router";
 import { Package, ShoppingBag, Users } from "lucide-react";
 
-import { AdminNav } from "../components/admin-nav";
+import { AdminShell } from "../components/admin-shell";
 import { getAdminDashboard } from "../lib/api";
 import { formatMoney, orderStatusLabel } from "../lib/format";
 
@@ -13,8 +13,7 @@ export const Route = createFileRoute("/admin")({
 
 function AdminPending() {
   return (
-    <main className="page admin-page">
-      <AdminNav />
+    <AdminShell>
       <div className="admin-main">
         <div className="section-head admin-heading">
           <div>
@@ -72,14 +71,18 @@ function AdminPending() {
           </section>
         </div>
       </div>
-    </main>
+    </AdminShell>
   );
 }
 
 function AdminPage() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   if (pathname !== "/admin") {
-    return <Outlet />;
+    return (
+      <AdminShell>
+        <Outlet />
+      </AdminShell>
+    );
   }
 
   const { items, recentOrders } = Route.useLoaderData();
@@ -107,8 +110,7 @@ function AdminPage() {
     .slice(0, 5);
 
   return (
-    <main className="page admin-page">
-      <AdminNav />
+    <AdminShell>
       <div className="admin-main">
         <div className="section-head">
           <div>
@@ -193,6 +195,6 @@ function AdminPage() {
           </section>
         </div>
       </div>
-    </main>
+    </AdminShell>
   );
 }
