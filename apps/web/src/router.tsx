@@ -10,6 +10,8 @@ export const getRouter = () => {
     defaultPreloadStaleTime: 0,
     context: {},
     defaultPendingComponent: () => <Loader />,
+    defaultPendingMs: 100,
+    defaultPendingMinMs: 300,
     defaultNotFoundComponent: () => <div>Not Found</div>,
   });
 

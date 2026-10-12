@@ -3,10 +3,13 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Stack } from "alchemy/Stack";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 
 export const database = Cloudflare.D1.Database("database", {
   migrations: "../../packages/db/migrations",
 });
+
+export const media = Cloudflare.R2.Bucket("media");
 
 export const web = Cloudflare.Website.Vite(
   "web",
@@ -32,11 +35,26 @@ export const web = Cloudflare.Website.Vite(
       workersDev: isDev ? true : false,
       env: {
         DB: database,
+        MEDIA: media,
         CORS_ORIGIN: Config.withDefault(
           Config.String("CORS_ORIGIN"),
           isProd ? "https://sweettreatslr.com" : `https://${stack.stage}.sweettreatslr.com`,
         ),
+        ADMIN_EMAILS: Config.withDefault(Config.String("ADMIN_EMAILS"), "cg@rocktownlabs.com"),
         BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
+        BETTER_AUTH_URL: Config.withDefault(
+          Config.String("BETTER_AUTH_URL"),
+          isProd ? "https://sweettreatslr.com" : `https://${stack.stage}.sweettreatslr.com`,
+        ),
+        STRIPE_SECRET_KEY: Config.withDefault(
+          Config.Redacted("STRIPE_SECRET_KEY"),
+          Redacted.make(""),
+        ),
+        STRIPE_PUBLISHABLE_KEY: Config.withDefault(Config.String("STRIPE_PUBLISHABLE_KEY"), ""),
+        STRIPE_WEBHOOK_SECRET: Config.withDefault(
+          Config.Redacted("STRIPE_WEBHOOK_SECRET"),
+          Redacted.make(""),
+        ),
       },
     };
   }),
@@ -53,9 +71,11 @@ export default Alchemy.Stack(
   Effect.gen(function* () {
     const db = yield* database;
     const site = yield* web;
+    const bucket = yield* media;
 
     return {
       databaseName: db.databaseName,
+      mediaBucket: bucket.bucketName,
       url: site.url,
     };
   }),

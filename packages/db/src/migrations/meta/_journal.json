@@ -4,9 +4,30 @@
   "entries": [
     {
       "idx": 0,
+      "version": "7",
+      "when": 1782865200000,
+      "tag": "0000_sweet_treats_lr",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782950400000,
+      "tag": "0001_shop_day_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
       "version": "6",
-      "when": 1791818084481,
-      "tag": "0000_cloudy_tag",
+      "when": 1783107895774,
+      "tag": "0002_boring_sue_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1783185435815,
+      "tag": "0003_user_stripe_customer_id",
       "breakpoints": true
     }
   ]

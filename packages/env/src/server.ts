@@ -5,6 +5,6 @@ import type { CloudflareEnv } from "../env.d.ts";
 // In dev mode with TanStack Start, we access via Proxy for robust property resolution.
 export const env = new Proxy({} as CloudflareEnv, {
   get(_target, prop: string) {
-    return (cf.env as any)[prop];
+    return (cf.env as any)?.[prop];
   },
 });

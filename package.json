@@ -39,25 +39,30 @@
     "format": "vp fmt",
     "staged": "vp staged",
     "dev:web": "vp run --filter web dev",
+    "dev:cf": "bun --filter web cf:dev",
+    "test": "vp run -r test",
+    "test:e2e": "bun --filter web e2e",
     "db:generate": "vp run --filter @sweettreats/db db:generate",
     "deploy": "vp run --filter @sweettreats/infra deploy",
     "destroy": "vp run --filter @sweettreats/infra destroy"
   },
   "dependencies": {
     "@sweettreats/env": "workspace:*",
-    "dotenv": "catalog:",
-    "zod": "catalog:"
+    "dotenv": "^17.4.2",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260621.1",
+    "@cloudflare/workers-types": "^4.20260702.1",
     "@sweettreats/config": "workspace:*",
-    "@types/node": "catalog:",
+    "@types/node": "^22.20.0",
     "lefthook": "^2.1.9",
     "oxfmt": "^0.53.0",
-    "oxlint": "^1.68.0",
+    "oxlint": "^1.72.0",
     "rolldown": "1.1.0",
-    "typescript": "catalog:",
-    "vite-plus": "0.1.24"
+    "typescript": "^6.0.3",
+    "vite-plus": "0.1.24",
+    "vitest": "^0.1.24",
+    "web": "workspace:*"
   },
   "overrides": {
     "vite": "npm:@voidzero-dev/vite-plus-core@0.1.24",
