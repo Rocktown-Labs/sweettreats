@@ -9,6 +9,8 @@ import { authClient } from "../lib/auth-client";
 import { PICKUP_WINDOW_DAYS, addDaysIso, pickupSlots } from "../lib/pickup";
 import { DatePicker } from "../components/date-picker";
 import { TimePicker } from "../components/time-picker";
+import { LocationPicker } from "../components/location-picker";
+import { MapPin } from "lucide-react";
 
 export const Route = createFileRoute("/checkout")({
   loader: () => getPickupAvailability(),
@@ -66,7 +68,7 @@ function CheckoutPending() {
 const PHONE_PATTERN = /^\+?[0-9()\-\s]{7,20}$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-type FieldName = "name" | "email" | "phone" | "pickupDate" | "pickupTime";
+type FieldName = "name" | "email" | "phone" | "pickupLocationId" | "pickupDate" | "pickupTime";
 type FieldErrors = Partial<Record<FieldName, string>>;
 
 function FieldError({ id, message }: { id: string; message?: string }) {
@@ -79,6 +81,7 @@ function FieldError({ id, message }: { id: string; message?: string }) {
 
 function CheckoutPage() {
   const pickup = Route.useLoaderData();
+  const locations = pickup.locations ?? [];
   const cart = useCart();
   const navigate = useNavigate();
   const { data: session } = authClient.useSession();
@@ -86,8 +89,11 @@ function CheckoutPage() {
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [isSubmitting, setSubmitting] = useState(false);
+  const [pickupLocationId, setPickupLocationId] = useState(() => locations[0]?.id ?? "");
   const [pickupDate, setPickupDate] = useState(pickup.pickupDate);
   const [pickupTime, setPickupTime] = useState("");
+
+  const selectedLocation = locations.find((l) => l.id === pickupLocationId);
 
   // Slots depend on "now" in the shop's time zone, so compute them on the client after mount-time
   // renders and whenever the date changes.
@@ -120,6 +126,7 @@ function CheckoutPage() {
     if (name.length < 2) errors.name = "Enter your name so we know who to hand the order to.";
     if (!EMAIL_PATTERN.test(email)) errors.email = "Enter a valid email address.";
     if (!PHONE_PATTERN.test(phone)) errors.phone = "Enter a phone number we can reach you at.";
+    if (!pickupLocationId) errors.pickupLocationId = "Choose a pickup location.";
     if (!pickupDate) errors.pickupDate = "Choose a pickup date.";
     if (!pickupTime) {
       errors.pickupTime = "Choose a pickup time.";
@@ -198,6 +205,7 @@ function CheckoutPage() {
                 name: String(form.get("name") ?? "").trim(),
                 email: String(form.get("email") ?? "").trim(),
                 phone: String(form.get("phone") ?? "").trim(),
+                pickupLocationId,
                 pickupDate,
                 pickupTime,
                 notes: String(form.get("notes") ?? ""),
@@ -307,6 +315,49 @@ function CheckoutPage() {
           <fieldset className="form-section">
             <legend>Pickup</legend>
             <div className="field-grid">
+              <div className="field field-wide">
+                <label htmlFor="checkout-pickupLocationId" className="field-label is-required">
+                  Pickup spot
+                </label>
+                <LocationPicker
+                  id="checkout-pickupLocationId"
+                  value={pickupLocationId}
+                  onChange={(next) => {
+                    setPickupLocationId(next);
+                    clearFieldError("pickupLocationId");
+                  }}
+                  locations={locations}
+                  invalid={Boolean(fieldErrors.pickupLocationId)}
+                  describedBy={
+                    fieldErrors.pickupLocationId ? "checkout-pickupLocationId-error" : undefined
+                  }
+                />
+                <FieldError
+                  id="checkout-pickupLocationId-error"
+                  message={fieldErrors.pickupLocationId}
+                />
+                {selectedLocation ? (
+                  <div
+                    className="location-callout"
+                    role="region"
+                    aria-label="Selected pickup spot details"
+                  >
+                    <div className="location-callout-header">
+                      <MapPin size={15} aria-hidden="true" className="location-callout-icon" />
+                      <span className="location-callout-name">{selectedLocation.name}</span>
+                      {selectedLocation.phone ? (
+                        <span className="location-callout-phone">· {selectedLocation.phone}</span>
+                      ) : null}
+                    </div>
+                    <p className="location-callout-address">{selectedLocation.address}</p>
+                    {selectedLocation.instructions ? (
+                      <p className="location-callout-instructions">
+                        <strong>Pickup notes:</strong> {selectedLocation.instructions}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
               <div className="field">
                 <label htmlFor="checkout-pickupDate" className="field-label is-required">
                   Date

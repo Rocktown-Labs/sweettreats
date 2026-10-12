@@ -6,10 +6,13 @@ import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 
 export const database = Cloudflare.D1.Database("database", {
+  name: "sweettreats-db",
   migrations: "../../packages/db/migrations",
 });
 
-export const media = Cloudflare.R2.Bucket("media");
+export const media = Cloudflare.R2.Bucket("media", {
+  name: "sweettreats-media",
+});
 
 export const web = Cloudflare.Website.Vite(
   "web",
@@ -40,7 +43,10 @@ export const web = Cloudflare.Website.Vite(
           Config.String("CORS_ORIGIN"),
           isProd ? "https://sweettreatslr.com" : `https://${stack.stage}.sweettreatslr.com`,
         ),
-        ADMIN_EMAILS: Config.withDefault(Config.String("ADMIN_EMAILS"), "cg@rocktownlabs.com"),
+        ADMIN_EMAILS: Config.withDefault(
+          Config.String("ADMIN_EMAILS"),
+          "stlr@demo.com,cg@rocktownlabs.com",
+        ),
         BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
         BETTER_AUTH_URL: Config.withDefault(
           Config.String("BETTER_AUTH_URL"),

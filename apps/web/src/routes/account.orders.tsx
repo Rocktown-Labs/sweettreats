@@ -178,8 +178,23 @@ function AccountOrdersPage() {
                         <strong>{order.orderNumber}</strong>
                         <span>{orderStatusLabel(order.status)}</span>
                       </div>
-                      <p className="muted">
-                        Pickup {order.pickupDate} at {order.pickupTime}
+                      <p
+                        className="muted"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <span>
+                          Pickup {order.pickupDate} at {order.pickupTime}
+                        </span>
+                        {order.pickupLocationName ? (
+                          <span className="order-location-badge" style={{ fontSize: "0.72rem" }}>
+                            {order.pickupLocationName}
+                          </span>
+                        ) : null}
                       </p>
                       <p className="customer-order-items">
                         {order.items

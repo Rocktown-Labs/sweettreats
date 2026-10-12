@@ -1,5 +1,6 @@
 import { Link, Outlet, useRouter, createFileRoute, useRouterState } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
+import { MapPin } from "lucide-react";
 
 import { getAdminDashboard, updateOrderStatus } from "../lib/api";
 import { formatMoney, orderStatusLabel } from "../lib/format";
@@ -43,8 +44,16 @@ function AdminOrdersPage() {
                   <strong>{order.orderNumber}</strong>
                   <span>{formatMoney(order.subtotalCents)}</span>
                 </div>
-                <p>
-                  {order.customerName} · {order.pickupDate} at {order.pickupTime}
+                <p style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <span>
+                    {order.customerName} · {order.pickupDate} at {order.pickupTime}
+                  </span>
+                  {order.pickupLocationName ? (
+                    <span className="order-location-badge">
+                      <MapPin size={12} aria-hidden="true" />
+                      {order.pickupLocationName}
+                    </span>
+                  ) : null}
                 </p>
                 <p className="muted">
                   {order.items

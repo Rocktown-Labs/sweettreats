@@ -12,7 +12,15 @@ import {
   SidebarProvider,
 } from "@sweettreats/ui/components/sidebar";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { CalendarDays, ClipboardList, LayoutDashboard, Package, Store, Users } from "lucide-react";
+import {
+  CalendarDays,
+  ClipboardList,
+  LayoutDashboard,
+  MapPin,
+  Package,
+  Store,
+  Users,
+} from "lucide-react";
 import type { CSSProperties, ReactNode } from "react";
 
 const adminLinks = [
@@ -20,6 +28,7 @@ const adminLinks = [
   { to: "/admin/items", label: "Items", icon: Package },
   { to: "/admin/daily-menu", label: "Menu days", icon: CalendarDays },
   { to: "/admin/orders", label: "Orders", icon: ClipboardList },
+  { to: "/admin/locations", label: "Locations", icon: MapPin },
   { to: "/admin/customers", label: "Customers", icon: Users },
 ] as const;
 

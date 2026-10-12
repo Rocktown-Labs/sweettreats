@@ -86,6 +86,33 @@ export const shopDaySettings = sqliteTable(
 
 export const shopDaySettingsRelations = relations(shopDaySettings, () => ({}));
 
+export const pickupLocations = sqliteTable(
+  "pickup_locations",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    address: text("address").notNull().default(""),
+    instructions: text("instructions").notNull().default(""),
+    phone: text("phone").notNull().default(""),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("pickup_locations_active_idx").on(table.active),
+    index("pickup_locations_sort_idx").on(table.sortOrder),
+  ],
+);
+
+export const pickupLocationsRelations = relations(pickupLocations, ({ many }) => ({
+  orders: many(orders),
+}));
+
 export const user = sqliteTable(
   "user",
   {
@@ -156,6 +183,10 @@ export const orders = sqliteTable(
     customerPhone: text("customer_phone").notNull(),
     pickupDate: text("pickup_date").notNull(),
     pickupTime: text("pickup_time").notNull(),
+    pickupLocationId: text("pickup_location_id").references(() => pickupLocations.id, {
+      onDelete: "set null",
+    }),
+    pickupLocationName: text("pickup_location_name").notNull().default(""),
     notes: text("notes").notNull().default(""),
     status: text("status", { enum: orderStatuses }).notNull().default("pending"),
     subtotalCents: integer("subtotal_cents").notNull(),
@@ -174,6 +205,7 @@ export const orders = sqliteTable(
     index("orders_email_idx").on(table.customerEmail),
     index("orders_user_idx").on(table.userId),
     index("orders_status_idx").on(table.status),
+    index("orders_pickup_location_idx").on(table.pickupLocationId),
   ],
 );
 
@@ -209,8 +241,12 @@ export const dailyMenuItemsRelations = relations(dailyMenuItems, ({ one }) => ({
   }),
 }));
 
-export const ordersRelations = relations(orders, ({ many }) => ({
+export const ordersRelations = relations(orders, ({ many, one }) => ({
   items: many(orderItems),
+  pickupLocation: one(pickupLocations, {
+    fields: [orders.pickupLocationId],
+    references: [pickupLocations.id],
+  }),
 }));
 
 export const orderItemsRelations = relations(orderItems, ({ one }) => ({

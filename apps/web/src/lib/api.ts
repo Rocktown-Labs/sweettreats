@@ -5,6 +5,7 @@ import {
   orderItems,
   orders,
   orderStatuses,
+  pickupLocations,
   shopDaySettings,
 } from "@sweettreats/db/schema/index";
 import { env } from "@sweettreats/env/server";
@@ -32,10 +33,21 @@ const checkoutSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
   phone: z.string().regex(/^\+?[0-9()\-\s]{7,20}$/, "Enter a valid phone number."),
+  pickupLocationId: z.string().min(1, "Choose a pickup location."),
   pickupDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Choose a valid pickup date."),
   pickupTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Choose a valid pickup time."),
   notes: z.string().max(500).optional().default(""),
   items: z.array(cartLineSchema).min(1),
+});
+
+const pickupLocationSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(2, "Location name is required"),
+  address: z.string().min(3, "Address is required"),
+  instructions: z.string().optional().default(""),
+  phone: z.string().optional().default(""),
+  active: z.boolean().default(true),
+  sortOrder: z.number().int().default(0),
 });
 
 const itemSchema = z.object({
@@ -216,6 +228,55 @@ const seedMenu = [
   },
 ] satisfies (typeof menuItems.$inferSelect)[];
 
+export type PickupLocation = typeof pickupLocations.$inferSelect;
+
+export const seedPickupLocations: PickupLocation[] = [
+  {
+    id: "loc-downtown",
+    name: "Main Bakery - Downtown Little Rock",
+    address: "400 President Clinton Ave, Little Rock, AR 72201",
+    instructions: "Pick up at the front counter. Curbside pickup available upon request.",
+    phone: "(501) 555-0142",
+    active: true,
+    sortOrder: 0,
+    createdAt: "2026-07-01 00:00:00",
+    updatedAt: "2026-07-01 00:00:00",
+  },
+  {
+    id: "loc-west-lr",
+    name: "West Little Rock Partner Pickup",
+    address: "11525 Cantrell Rd, Little Rock, AR 72212",
+    instructions: "Partner pickup desk. State your name and Sweet Treats order number.",
+    phone: "(501) 555-0188",
+    active: true,
+    sortOrder: 1,
+    createdAt: "2026-07-01 00:00:00",
+    updatedAt: "2026-07-01 00:00:00",
+  },
+];
+
+async function getOrCreatePickupLocations(db: ReturnType<typeof createDb>) {
+  try {
+    const existing = await db
+      .select()
+      .from(pickupLocations)
+      .orderBy(asc(pickupLocations.sortOrder), asc(pickupLocations.name));
+
+    if (existing.length === 0) {
+      try {
+        await db.insert(pickupLocations).values(seedPickupLocations);
+        return seedPickupLocations;
+      } catch {
+        return seedPickupLocations;
+      }
+    }
+
+    return existing;
+  } catch {
+    return seedPickupLocations;
+  }
+}
+
 function hasDatabase() {
   return !!env.DB;
 }
@@ -273,12 +334,86 @@ export const getTodayMenu = createServerFn({ method: "GET" }).handler(async () =
 
 export const getPickupAvailability = createServerFn({ method: "GET" }).handler(async () => {
   if (!hasDatabase()) {
-    return { pickupDate: shopDateIso(), closed: false };
+    return {
+      pickupDate: shopDateIso(),
+      closed: false,
+      locations: seedPickupLocations.filter((l) => l.active),
+    };
   }
 
-  const menu = await nextAvailableMenu(createDb());
-  return { pickupDate: menu.menuDate, closed: menu.closed };
+  const db = createDb();
+  const [menu, allLocations] = await Promise.all([
+    nextAvailableMenu(db),
+    getOrCreatePickupLocations(db),
+  ]);
+
+  return {
+    pickupDate: menu.menuDate,
+    closed: menu.closed,
+    locations: allLocations.filter((l) => l.active),
+  };
 });
+
+export const getPickupLocations = createServerFn({ method: "GET" }).handler(async () => {
+  if (!hasDatabase()) {
+    return seedPickupLocations.filter((l) => l.active);
+  }
+  const db = createDb();
+  const all = await getOrCreatePickupLocations(db);
+  return all.filter((l) => l.active);
+});
+
+export const getAdminPickupLocations = createServerFn({ method: "GET" }).handler(async () => {
+  await requireAdmin();
+  if (!hasDatabase()) {
+    return seedPickupLocations;
+  }
+  const db = dbRequired();
+  return getOrCreatePickupLocations(db);
+});
+
+export const savePickupLocation = createServerFn({ method: "POST" })
+  .validator((data: unknown) => pickupLocationSchema.parse(data))
+  .handler(async ({ data }) => {
+    await requireAdmin();
+    if (!hasDatabase()) {
+      return { id: data.id || "mock-loc-id", ...data };
+    }
+    const db = dbRequired();
+    const id = data.id || crypto.randomUUID();
+    const values = {
+      name: data.name,
+      address: data.address,
+      instructions: data.instructions,
+      phone: data.phone,
+      active: data.active,
+      sortOrder: data.sortOrder,
+      updatedAt: sql`CURRENT_TIMESTAMP`,
+    };
+
+    if (data.id) {
+      await db.update(pickupLocations).set(values).where(eq(pickupLocations.id, data.id));
+      logger.info("admin.pickup_location_updated", { id, name: data.name });
+    } else {
+      await db.insert(pickupLocations).values({ id, ...values });
+      logger.info("admin.pickup_location_created", { id, name: data.name });
+    }
+
+    return { id, ...values };
+  });
+
+export const deletePickupLocation = createServerFn({ method: "POST" })
+  .validator((id: string) => z.string().min(1).parse(id))
+  .handler(async ({ data: id }) => {
+    await requireAdmin();
+    if (!hasDatabase()) {
+      return { ok: true };
+    }
+    const db = dbRequired();
+    await db.delete(pickupLocations).where(eq(pickupLocations.id, id));
+    logger.info("admin.pickup_location_deleted", { id });
+    return { ok: true };
+  });
 
 export const getMenuItem = createServerFn({ method: "GET" })
   .validator((id: string) => id)
@@ -422,6 +557,28 @@ export const createOrder = createServerFn({ method: "POST" })
         }
       }
 
+      let pickupLocationName = "Bakery Pickup";
+      if (data.pickupLocationId) {
+        try {
+          const loc = await db.query.pickupLocations.findFirst({
+            where: eq(pickupLocations.id, data.pickupLocationId),
+          });
+          if (loc) {
+            pickupLocationName = loc.name;
+          } else {
+            const fallback = seedPickupLocations.find((l) => l.id === data.pickupLocationId);
+            if (fallback) {
+              pickupLocationName = fallback.name;
+            }
+          }
+        } catch {
+          const fallback = seedPickupLocations.find((l) => l.id === data.pickupLocationId);
+          if (fallback) {
+            pickupLocationName = fallback.name;
+          }
+        }
+      }
+
       await db.insert(orders).values({
         id: orderId,
         orderNumber,
@@ -429,6 +586,8 @@ export const createOrder = createServerFn({ method: "POST" })
         customerName: data.name,
         customerEmail: data.email,
         customerPhone: data.phone,
+        pickupLocationId: data.pickupLocationId,
+        pickupLocationName,
         pickupDate,
         pickupTime: data.pickupTime,
         notes: data.notes,
@@ -456,7 +615,13 @@ export const createOrder = createServerFn({ method: "POST" })
         itemCount: lines.reduce((sum, line) => sum + line.quantity, 0),
         subtotalCents,
         customerEmail: data.email,
+        customerPhone: data.phone,
+        pickupLocationId: data.pickupLocationId,
+        pickupLocationName,
+        pickupDate,
+        pickupTime: data.pickupTime,
         userId,
+        dispatchNote: `Call location (${pickupLocationName}) to confirm ticket. Future: automated location routing.`,
       });
 
       return { orderId, orderNumber, checkoutUrl };
@@ -483,7 +648,7 @@ export const getOrder = createServerFn({ method: "GET" })
     const db = dbRequired();
     let order = await db.query.orders.findFirst({
       where: eq(orders.id, data.id),
-      with: { items: true },
+      with: { items: true, pickupLocation: true },
     });
 
     if (order && order.status === "pending" && data.sessionId) {
@@ -496,7 +661,7 @@ export const getOrder = createServerFn({ method: "GET" })
 
             order = await db.query.orders.findFirst({
               where: eq(orders.id, data.id),
-              with: { items: true },
+              with: { items: true, pickupLocation: true },
             });
           }
         } catch (err) {
@@ -519,7 +684,7 @@ export const getAdminOrder = createServerFn({ method: "GET" })
     }
     const order = await dbRequired().query.orders.findFirst({
       where: eq(orders.id, id),
-      with: { items: true },
+      with: { items: true, pickupLocation: true },
     });
 
     return order ?? null;
@@ -538,7 +703,7 @@ export const getAccountOrders = createServerFn({ method: "GET" }).handler(async 
 
   return db.query.orders.findMany({
     where: userId ? eq(orders.userId, userId) : eq(orders.customerEmail, email ?? ""),
-    with: { items: true },
+    with: { items: true, pickupLocation: true },
     orderBy: desc(orders.createdAt),
   });
 });
@@ -561,7 +726,7 @@ export const getAccountOrder = createServerFn({ method: "GET" })
         eq(orders.id, id),
         userId ? eq(orders.userId, userId) : eq(orders.customerEmail, email ?? ""),
       ),
-      with: { items: true },
+      with: { items: true, pickupLocation: true },
     });
 
     return order ?? null;
@@ -575,14 +740,15 @@ export const getAdminDashboard = createServerFn({ method: "GET" }).handler(async
       recentOrders: [],
       todaysMenu: [],
       shopDays: [],
+      locations: seedPickupLocations,
       statuses: orderStatuses,
     };
   }
   const db = dbRequired();
-  const [items, recentOrders, todaysMenu, shopDays] = await Promise.all([
+  const [items, recentOrders, todaysMenu, shopDays, locations] = await Promise.all([
     db.select().from(menuItems).orderBy(asc(menuItems.sortOrder), asc(menuItems.name)),
     db.query.orders.findMany({
-      with: { items: true },
+      with: { items: true, pickupLocation: true },
       orderBy: desc(orders.createdAt),
       limit: 30,
     }),
@@ -595,9 +761,10 @@ export const getAdminDashboard = createServerFn({ method: "GET" }).handler(async
       orderBy: desc(shopDaySettings.dayDate),
       limit: 60,
     }),
+    getOrCreatePickupLocations(db),
   ]);
 
-  return { items, recentOrders, todaysMenu, shopDays, statuses: orderStatuses };
+  return { items, recentOrders, todaysMenu, shopDays, locations, statuses: orderStatuses };
 });
 
 export const saveMenuItem = createServerFn({ method: "POST" })

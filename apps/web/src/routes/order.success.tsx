@@ -1,6 +1,7 @@
 import { Link, createFileRoute, useNavigate, useLoaderData } from "@tanstack/react-router";
 import { z } from "zod";
 import { useEffect, useState } from "react";
+import { MapPin } from "lucide-react";
 import { authClient } from "../lib/auth-client";
 
 import { getOrder } from "../lib/api";
@@ -60,6 +61,49 @@ function SuccessPage() {
             Pickup is requested for {order.pickupDate} at {order.pickupTime}. The shop will confirm
             before the box is final.
           </p>
+          {order.pickupLocationName ? (
+            <div
+              style={{
+                margin: "16px auto",
+                maxWidth: "420px",
+                padding: "12px 16px",
+                background: "rgba(255, 255, 255, 0.65)",
+                border: "1.5px solid #d8ae6a",
+                borderRadius: "10px",
+                textAlign: "left",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  fontWeight: 700,
+                  color: "#1b0f08",
+                }}
+              >
+                <MapPin size={16} style={{ color: "#b9823b" }} aria-hidden="true" />
+                <span>Pickup location: {order.pickupLocationName}</span>
+              </div>
+              {order.pickupLocation?.address ? (
+                <p style={{ margin: "4px 0 0 22px", fontSize: "0.88rem", color: "#4a2a12" }}>
+                  {order.pickupLocation.address}
+                </p>
+              ) : null}
+              {order.pickupLocation?.instructions ? (
+                <p
+                  style={{
+                    margin: "4px 0 0 22px",
+                    fontSize: "0.82rem",
+                    color: "#6e4422",
+                    fontStyle: "italic",
+                  }}
+                >
+                  {order.pickupLocation.instructions}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <div style={{ marginBottom: "16px" }}>
             {order.items.map((item) => (
               <p key={item.id}>
