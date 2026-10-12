@@ -33,6 +33,7 @@ export const web = Cloudflare.Website.Vite(
         : `${stack.stage}.sweettreatslr.com`;
 
     return {
+      name: isProd ? "sweettreats-prod" : `sweettreats-${stack.stage}`,
       rootDir: "../../apps/web",
       domain,
       workersDev: isDev ? true : false,
