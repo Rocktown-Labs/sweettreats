@@ -4,6 +4,37 @@ import { CookieCard } from "../components/cookie-card";
 import { getMenu } from "../lib/api";
 
 export const Route = createFileRoute("/menu")({
+  head: () => ({
+    meta: [
+      {
+        title: "Full Cookie Menu • Sweet Treats LR",
+      },
+      {
+        name: "description",
+        content:
+          "Browse all handcrafted cookies, cookie jars, and rotating flavors at Sweet Treats LR in Little Rock, Arkansas.",
+      },
+      {
+        property: "og:title",
+        content: "Full Cookie Menu • Sweet Treats LR",
+      },
+      {
+        property: "og:description",
+        content:
+          "Browse all handcrafted cookies, cookie jars, and rotating flavors at Sweet Treats LR in Little Rock, Arkansas.",
+      },
+      {
+        property: "og:url",
+        content: "https://sweettreatslr.com/menu",
+      },
+    ],
+    links: [
+      {
+        rel: "canonical",
+        href: "https://sweettreatslr.com/menu",
+      },
+    ],
+  }),
   loader: () => getMenu(),
   component: MenuPage,
   pendingComponent: MenuPagePending,

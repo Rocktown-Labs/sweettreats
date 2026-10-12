@@ -3,7 +3,7 @@
   "name": "sweettreats",
   "main": "./worker.ts",
   "compatibility_date": "2026-07-01",
-  "compatibility_flags": ["nodejs_compat_v2"],
+  "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",

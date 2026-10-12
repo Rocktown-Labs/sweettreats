@@ -75,6 +75,24 @@ function AccountOrderDetailPage() {
               <span>Pickup time</span>
               <strong>{order.pickupTime}</strong>
             </div>
+            {order.pickupLocationName ? (
+              <div>
+                <span>Pickup location</span>
+                <strong>{order.pickupLocationName}</strong>
+              </div>
+            ) : null}
+            {order.pickupLocation?.address ? (
+              <div>
+                <span>Location address</span>
+                <strong>{order.pickupLocation.address}</strong>
+              </div>
+            ) : null}
+            {order.pickupLocation?.instructions ? (
+              <div>
+                <span>Pickup note</span>
+                <strong>{order.pickupLocation.instructions}</strong>
+              </div>
+            ) : null}
             <div>
               <span>Customer</span>
               <strong>{order.customerName}</strong>
