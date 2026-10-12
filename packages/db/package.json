@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "db:generate": "drizzle-kit generate",
+    "db:generate": "drizzle-kit generate && cp src/migrations/*.sql migrations/",
     "check-types": "tsc --noEmit"
   },
   "dependencies": {

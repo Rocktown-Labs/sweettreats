@@ -5,7 +5,7 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 
 export const database = Cloudflare.D1.Database("database", {
-  migrations: "../../packages/db/src/migrations",
+  migrations: "../../packages/db/migrations",
 });
 
 export const web = Cloudflare.Website.Vite(
