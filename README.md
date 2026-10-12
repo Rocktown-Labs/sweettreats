@@ -10,7 +10,7 @@ This project was created with [Better-T-Stack](https://github.com/AmanVarshney01
 - **Shared UI package** - shadcn/ui primitives live in `packages/ui`
 - **Drizzle** - TypeScript-first ORM
 - **Cloudflare D1** - Database engine
-- **Authentication** - Clerk
+- **Authentication** - Better Auth (self-hosted with SQLite/D1)
 - **Oxlint** - Oxlint + Oxfmt (linting & formatting)
 - **Vite+** - Unified Vite toolchain, workspace task runner, linting, and formatting
 
@@ -36,11 +36,11 @@ Alchemy provisions the D1 database and applies migrations during `dev` and `depl
 bun run db:generate
 ```
 
-## Clerk Authentication Setup
+## Authentication Setup (Better Auth)
 
-- Follow the guide: [Clerk Quickstart](https://clerk.com/docs/tanstack-react-start/getting-started/quickstart)
-- Set `VITE_CLERK_PUBLISHABLE_KEY` in `apps/web/.env`
-- Set `CLERK_SECRET_KEY` in `apps/web/.env` for Clerk server middleware and server-side Clerk auth
+- Better Auth runs directly on your Cloudflare D1 database.
+- Set `BETTER_AUTH_SECRET` in `apps/web/.env` (generate with `openssl rand -base64 32`).
+- Alchemy automatically provisions the D1 tables for Better Auth on deploy.
 
 Then, run the development server:
 

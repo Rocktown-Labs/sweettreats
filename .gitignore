@@ -52,3 +52,5 @@ coverage
 .cache
 tmp
 temp
+.agents
+skills-lock.json

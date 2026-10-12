@@ -21,7 +21,7 @@
   "frontend": ["tanstack-start"],
   "addons": ["lefthook", "oxlint", "vite-plus"],
   "examples": [],
-  "auth": "clerk",
+  "auth": "better-auth",
   "payments": "none",
   "packageManager": "bun",
   "dbSetup": "d1",

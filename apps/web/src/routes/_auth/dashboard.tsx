@@ -1,26 +1,27 @@
-import { UserButton, useUser } from "@clerk/tanstack-react-start";
+import { Button } from "@sweettreats/ui/components/button";
 import { createFileRoute } from "@tanstack/react-router";
+import { authClient, useSession } from "../../utils/auth-client";
 
 export const Route = createFileRoute("/_auth/dashboard")({
   component: RouteComponent,
 });
 
 function RouteComponent() {
-  const user = useUser();
-  const nameFromParts = [user.user?.firstName, user.user?.lastName].filter(Boolean).join(" ");
-  const displayName =
-    user.user?.fullName ||
-    nameFromParts ||
-    user.user?.username ||
-    user.user?.primaryEmailAddress?.emailAddress ||
-    user.user?.primaryPhoneNumber?.phoneNumber ||
-    "User";
+  const { data: session } = useSession();
+  const displayName = session?.user?.name || session?.user?.email || "User";
 
   return (
     <div className="space-y-4 p-6">
       <h1 className="text-2xl font-semibold">Dashboard</h1>
-      <p>Welcome {displayName}</p>
-      <UserButton />
+      <p>Welcome, {displayName}!</p>
+      <Button
+        variant="outline"
+        onClick={async () => {
+          await authClient.signOut();
+        }}
+      >
+        Sign Out
+      </Button>
     </div>
   );
 }

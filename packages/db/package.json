@@ -7,10 +7,14 @@
     },
     "./*": {
       "default": "./src/*.ts"
+    },
+    "./schema": {
+      "default": "./src/schema/index.ts"
     }
   },
   "scripts": {
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "check-types": "tsc --noEmit"
   },
   "dependencies": {
     "@libsql/client": "catalog:",

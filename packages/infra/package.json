@@ -5,10 +5,14 @@
   "scripts": {
     "dev": "alchemy dev",
     "deploy": "alchemy deploy",
-    "destroy": "alchemy destroy"
+    "destroy": "alchemy destroy",
+    "check-types": "tsc --noEmit"
   },
   "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@effect/platform-node": "catalog:",
     "dotenv": "catalog:",
+    "effect": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
