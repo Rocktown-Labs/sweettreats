@@ -22,10 +22,10 @@ upsert_env() {
   local key="$1"
   local val="$2"
   if [ -n "$val" ]; then
-    bun -e '
+    KEY="$key" VAL="$val" bun -e '
       import fs from "node:fs";
-      const key = process.argv[2];
-      const val = process.argv[3];
+      const key = process.env.KEY;
+      const val = process.env.VAL;
       for (const file of ["packages/infra/.env", ".env"]) {
         let content = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
         const line = `${key}="${val}"`;
@@ -37,7 +37,7 @@ upsert_env() {
         }
         fs.writeFileSync(file, content, "utf8");
       }
-    ' "$key" "$val"
+    '
   fi
 }
 
