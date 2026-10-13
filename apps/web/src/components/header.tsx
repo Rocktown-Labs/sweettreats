@@ -1,9 +1,12 @@
-import { Link, useNavigate, useLoaderData } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { useServerFn } from "@tanstack/react-start";
 import { ShoppingBag } from "lucide-react";
 import { toast } from "sonner";
 
 import { useCart } from "../lib/cart";
 import { authClient } from "../lib/auth-client";
+import { isCurrentUserAdmin } from "../lib/auth";
 
 export default function Header() {
   const cart = useCart();
@@ -44,7 +47,30 @@ function HeaderAuthControls() {
   const cart = useCart();
   const { data: session, isPending } = authClient.useSession();
   const navigate = useNavigate();
-  const rootData = useLoaderData({ strict: false }) as { adminEmails?: string[] } | undefined;
+  const checkAdmin = useServerFn(isCurrentUserAdmin);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!session?.user) {
+      setIsAdmin(false);
+      return;
+    }
+    checkAdmin()
+      .then((result) => {
+        if (!cancelled) {
+          setIsAdmin(Boolean(result));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setIsAdmin(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.user?.id, checkAdmin]);
 
   if (isPending) {
     return (
@@ -55,9 +81,6 @@ function HeaderAuthControls() {
   }
 
   if (session?.user) {
-    const isAdmin = Boolean(
-      session.user.email && rootData?.adminEmails?.includes(session.user.email.toLowerCase()),
-    );
     return (
       <>
         {/* Admins manage orders from the admin area, so they don't get the customer Orders tab. */}

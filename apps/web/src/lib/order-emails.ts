@@ -1,5 +1,5 @@
 import { createDb } from "@sweettreats/db";
-import { orders } from "@sweettreats/db/schema/index";
+import { orders, pickupLocations } from "@sweettreats/db/schema/index";
 import { eq } from "drizzle-orm";
 import { sendAdminOrderEmail, sendCustomerOrderEmail } from "@sweettreats/email";
 import { logger } from "./logger";
@@ -9,6 +9,38 @@ import { env } from "@sweettreats/env/server";
 function readEnv(key: string): string {
   const processEnv = typeof process === "undefined" ? undefined : process.env[key];
   return String((env as Record<string, unknown>)[key] ?? processEnv ?? "");
+}
+
+function publicBaseUrl() {
+  const fromEnv = readEnv("BETTER_AUTH_URL");
+  return (fromEnv || "https://sweettreatslr.com").replace(/\/$/, "");
+}
+
+/**
+ * Recipients for the shop-side order notification.
+ *
+ * Routing rules:
+ * 1. If the order's pickup location has a contact email, the notification
+ *    goes to the person at that place (vendor routing).
+ * 2. Otherwise it falls back to the admin roster.
+ */
+async function shopNotificationRecipients(
+  orderPickupLocationId: string | null,
+): Promise<{ to: string[]; routedToLocation: boolean }> {
+  if (orderPickupLocationId) {
+    const db = createDb();
+    try {
+      const location = await db.query.pickupLocations.findFirst({
+        where: eq(pickupLocations.id, orderPickupLocationId),
+      });
+      if (location?.contactEmail) {
+        return { to: [location.contactEmail], routedToLocation: true };
+      }
+    } catch {
+      // Fall through to admin routing.
+    }
+  }
+  return { to: adminEmails(), routedToLocation: false };
 }
 
 export async function sendOrderNotifications(orderId: string) {
@@ -27,12 +59,11 @@ export async function sendOrderNotifications(orderId: string) {
     const resendApiKey = readEnv("RESEND_API_KEY");
     const fromEmail =
       readEnv("RESEND_FROM_EMAIL") || "Sweet Treats LR <orders@orders.sweettreatslr.com>";
+    const baseUrl = publicBaseUrl();
 
-    const adminRecipients = adminEmails();
-    const effectiveAdmins =
-      adminRecipients.length > 0
-        ? adminRecipients
-        : ["lauryan0311@gmail.com", "admin@sweettreatslr.com"];
+    const { to: shopRecipients, routedToLocation } = await shopNotificationRecipients(
+      order.pickupLocationId,
+    );
 
     const itemsProps = order.items.map((item) => ({
       name: item.itemNameSnapshot,
@@ -41,7 +72,7 @@ export async function sendOrderNotifications(orderId: string) {
       lineTotalCents: item.lineTotalCents,
     }));
 
-    // 1. Send Admin Notification
+    // 1. Send shop notification (location contact, or admins)
     const adminResult = await sendAdminOrderEmail(
       {
         orderId: order.id,
@@ -58,16 +89,16 @@ export async function sendOrderNotifications(orderId: string) {
         subtotalCents: order.subtotalCents,
         paymentStatus: order.paymentStatus === "paid" ? "paid" : "confirmed",
         items: itemsProps,
-        adminDashboardUrl: `https://sweettreatslr.com/admin/orders/${order.id}`,
+        adminDashboardUrl: `${baseUrl}/admin/orders/${order.id}`,
       },
       {
-        to: effectiveAdmins,
+        to: shopRecipients,
         from: fromEmail,
         apiKey: resendApiKey,
       },
     );
 
-    // 2. Send Customer Order Confirmation (if customer email provided)
+    // 2. Send customer order confirmation (if customer email provided)
     let customerResult: import("@sweettreats/email").SendEmailResult = {
       success: true,
       mocked: true,
@@ -90,7 +121,7 @@ export async function sendOrderNotifications(orderId: string) {
             quantity: i.quantity,
             lineTotalCents: i.lineTotalCents,
           })),
-          viewOrderUrl: "https://sweettreatslr.com/order/success",
+          viewOrderUrl: `${baseUrl}/order/success?orderId=${order.id}`,
         },
         {
           to: order.customerEmail,
@@ -100,6 +131,7 @@ export async function sendOrderNotifications(orderId: string) {
       );
     }
 
+    // No PII (recipient addresses) in logs — log routing outcome only.
     logger.info("order.emails_dispatched", {
       orderId: order.id,
       orderNumber: order.orderNumber,
@@ -107,7 +139,8 @@ export async function sendOrderNotifications(orderId: string) {
       adminMocked: adminResult.mocked,
       customerSuccess: customerResult.success,
       customerMocked: (customerResult as any).mocked,
-      recipients: effectiveAdmins,
+      routedToLocation,
+      shopRecipientCount: shopRecipients.length,
     });
   } catch (err) {
     logger.error("order.emails_dispatch_failed", {

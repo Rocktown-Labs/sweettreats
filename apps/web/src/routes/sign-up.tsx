@@ -41,8 +41,10 @@ function SignUpPage() {
         return;
       }
 
-      toast.success("Account created successfully!");
-      await navigate({ to: safeRedirect(redirect), replace: true });
+      // With email verification required, sign-up creates the account but no
+      // session: point the user at their inbox instead of a logged-in page.
+      toast.success("Account created! Check your inbox to verify your email.");
+      await navigate({ to: "/sign-in", replace: true });
     } catch (caught) {
       setError(caughtAuthMessage(caught, "An unexpected error occurred."));
     } finally {
@@ -66,6 +68,13 @@ function SignUpPage() {
         >
           Create an account
         </h1>
+
+        <p
+          className="muted"
+          style={{ textAlign: "center", marginTop: "-16px", fontSize: "0.86rem" }}
+        >
+          We&apos;ll email you a verification link after sign-up.
+        </p>
 
         <form
           onSubmit={handleSubmit}

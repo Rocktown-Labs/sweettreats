@@ -94,6 +94,8 @@ export const pickupLocations = sqliteTable(
     address: text("address").notNull().default(""),
     instructions: text("instructions").notNull().default(""),
     phone: text("phone").notNull().default(""),
+    /** Where order notifications for this location are routed. Falls back to admin emails when empty. */
+    contactEmail: text("contact_email").notNull().default(""),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: text("created_at")
@@ -122,6 +124,8 @@ export const user = sqliteTable(
     emailVerified: integer("email_verified", { mode: "boolean" }).notNull(),
     image: text("image"),
     stripeCustomerId: text("stripe_customer_id"),
+    /** Access role: "admin" (full backoffice), "vendor" (future location-scoped), "customer" (default). */
+    role: text("role"),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
@@ -259,3 +263,18 @@ export const orderItemsRelations = relations(orderItems, ({ one }) => ({
     references: [menuItems.id],
   }),
 }));
+
+/**
+ * Fixed-window rate limit counters, keyed by `action:bucket-key` with the time
+ * bucket baked into the key so stale rows are cheap to prune.
+ */
+export const rateLimits = sqliteTable(
+  "rate_limits",
+  {
+    bucketKey: text("bucket_key").primaryKey(),
+    hits: integer("hits").notNull().default(0),
+    /** Unix seconds when this bucket row is safe to delete. */
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (table) => [index("rate_limits_expires_idx").on(table.expiresAt)],
+);

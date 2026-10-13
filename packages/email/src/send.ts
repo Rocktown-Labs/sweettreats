@@ -8,6 +8,7 @@ import CustomerOrderConfirmationEmail, {
   type CustomerOrderConfirmationEmailProps,
 } from "../emails/customer-order-confirmation";
 import MagicLinkEmail, { type MagicLinkEmailProps } from "../emails/magic-link";
+import VerifyEmail, { type VerifyEmailProps } from "../emails/verify-email";
 
 export interface SendEmailResult {
   success: boolean;
@@ -129,6 +130,55 @@ export async function sendCustomerOrderEmail(
       JSON.stringify({
         event: "email.customer_order_confirmation_failed",
         orderId: props.orderId,
+        error: error.message,
+      }),
+    );
+    return { success: false, error: error.message };
+  }
+
+  return { success: true, id: data?.id };
+}
+
+export async function sendVerifyEmail(
+  props: VerifyEmailProps,
+  options: {
+    to: string;
+    from?: string;
+    apiKey?: string;
+  },
+): Promise<SendEmailResult> {
+  const from = options.from || DEFAULT_FROM_EMAIL;
+  const resend = getResendClient(options.apiKey);
+
+  const element = React.createElement(VerifyEmail, props);
+  const html = await render(element);
+  const text = await render(element, { plainText: true });
+
+  const subject = "Verify your Sweet Treats LR email";
+
+  if (!resend) {
+    console.info(
+      JSON.stringify({
+        event: "email.verify_email_simulated",
+        to: options.to,
+      }),
+    );
+    return { success: true, mocked: true };
+  }
+
+  const { data, error } = await resend.emails.send({
+    from,
+    to: options.to,
+    subject,
+    html,
+    text,
+  });
+
+  if (error) {
+    console.error(
+      JSON.stringify({
+        event: "email.verify_email_failed",
+        to: options.to,
         error: error.message,
       }),
     );

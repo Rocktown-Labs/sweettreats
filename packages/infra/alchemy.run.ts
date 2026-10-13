@@ -5,13 +5,21 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 
+/**
+ * Prod keeps the original resource names so existing data/buckets are adopted
+ * untouched. Every other stage (PR previews, dev) gets suffixed names so
+ * preview code never reads or writes production data or media.
+ */
+const stageScopedName = (base: string) =>
+  Stack.useSync((stack) => (stack.stage === "prod" ? base : `${base}-${stack.stage}`));
+
 export const database = Cloudflare.D1.Database("database", {
-  name: "sweettreats-db",
+  name: stageScopedName("sweettreats-db"),
   migrations: "../../packages/db/migrations",
 });
 
 export const media = Cloudflare.R2.Bucket("media", {
-  name: "sweettreats-media",
+  name: stageScopedName("sweettreats-media"),
 });
 
 export const web = Cloudflare.Website.Vite(
@@ -40,10 +48,6 @@ export const web = Cloudflare.Website.Vite(
       env: {
         DB: database,
         MEDIA: media,
-        CORS_ORIGIN: Config.withDefault(
-          Config.String("CORS_ORIGIN"),
-          isProd ? "https://sweettreatslr.com" : `https://${stack.stage}.sweettreatslr.com`,
-        ),
         ADMIN_EMAILS: Config.withDefault(
           Config.String("ADMIN_EMAILS"),
           "lauryan0311@gmail.com,admin@sweettreatslr.com,stlr@demo.com,cg@rocktownlabs.com",

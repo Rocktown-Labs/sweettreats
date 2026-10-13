@@ -22,6 +22,7 @@ type LocationFormData = {
   address: string;
   instructions: string;
   phone: string;
+  contactEmail: string;
   active: boolean;
   sortOrder: number;
 };
@@ -31,6 +32,7 @@ const emptyFormData: LocationFormData = {
   address: "",
   instructions: "",
   phone: "",
+  contactEmail: "",
   active: true,
   sortOrder: 0,
 };
@@ -61,6 +63,7 @@ function AdminLocationsPage() {
       address: loc.address,
       instructions: loc.instructions ?? "",
       phone: loc.phone ?? "",
+      contactEmail: loc.contactEmail ?? "",
       active: loc.active,
       sortOrder: loc.sortOrder,
     });
@@ -81,6 +84,7 @@ function AdminLocationsPage() {
           address: loc.address,
           instructions: loc.instructions ?? undefined,
           phone: loc.phone ?? undefined,
+          contactEmail: loc.contactEmail || "",
           active: !loc.active,
           sortOrder: loc.sortOrder,
         },
@@ -133,6 +137,7 @@ function AdminLocationsPage() {
           address: formData.address.trim(),
           instructions: formData.instructions.trim() || undefined,
           phone: formData.phone.trim() || undefined,
+          contactEmail: formData.contactEmail.trim(),
           active: formData.active,
           sortOrder: Number(formData.sortOrder) || 0,
         },
@@ -229,6 +234,20 @@ function AdminLocationsPage() {
                   value={formData.phone}
                   onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                 />
+              </label>
+
+              <label className="field">
+                <span className="field-label">Notification email</span>
+                <input
+                  type="email"
+                  placeholder="person-at-this-location@example.com"
+                  value={formData.contactEmail}
+                  onChange={(e) => setFormData({ ...formData, contactEmail: e.target.value })}
+                />
+                <small className="field-hint">
+                  Order notifications for this location are emailed here. Leave blank to use the
+                  admin inbox.
+                </small>
               </label>
 
               <label className="field">
