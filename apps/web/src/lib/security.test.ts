@@ -36,6 +36,13 @@ describe("order-token", () => {
     const tampered = token.slice(0, 30) + (token.endsWith("00") ? "11" : "00");
     expect(await verifyOrderToken("order-1", tampered)).toBe(false);
   });
+
+  it("fails closed when no secret is configured", async () => {
+    envMock.env = {};
+    const { verifyOrderToken } = await import("./order-token");
+    expect(await verifyOrderToken("order-1", "anything")).toBe(false);
+    expect(await verifyOrderToken("order-1", undefined)).toBe(false);
+  });
 });
 
 describe("rate-limit", () => {

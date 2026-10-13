@@ -7,47 +7,28 @@ import { logger } from "./logger";
  * Inventory helpers shared by checkout and the Stripe webhook.
  *
  * Reservation is a conditional UPDATE (`WHERE available AND quantity >= n`),
- * which is race-safe on D1. Release is additive and only re-enables the item
- * when stock actually comes back.
+ * which is race-safe on D1. Release must mirror reservation exactly:
+ * only tracked items ever had stock taken, and availability is only restored
+ * from the sold-out state — an admin's deliberate `available = false` is
+ * never overwritten by a release.
  */
 
-export async function releaseInventoryForOrder(orderId: string): Promise<number> {
-  const db = createDb();
-  const lines = await db
-    .select({ menuItemId: orderItems.menuItemId, quantity: orderItems.quantity })
-    .from(orderItems)
-    .where(eq(orderItems.orderId, orderId));
+type ReleaseLine = { itemId: string; quantity: number };
 
-  return releaseReservedLines(
-    db,
-    lines.map((line) => ({
-      itemId: line.menuItemId,
-      quantity: line.quantity,
-    })),
-  );
-}
-
-/**
- * Release in-memory reservations when an order failed before its rows were
- * persisted (order_items may not exist yet, so the order-based variant
- * would find nothing to release).
- */
-export async function releaseReservedLines(
+async function releaseLines(
   db: ReturnType<typeof createDb>,
-  lines: { itemId: string | null; quantity: number }[],
+  lines: ReleaseLine[],
 ): Promise<number> {
   let released = 0;
   for (const line of lines) {
-    if (!line.itemId) {
-      continue;
-    }
     await db
       .update(menuItems)
       .set({
         inventoryQuantity: sql`${menuItems.inventoryQuantity} + ${line.quantity}`,
-        // Only flip availability back on if the release brought stock above
-        // zero; the item may have been disabled by an admin in the meantime.
-        available: sql`CASE WHEN ${menuItems.inventoryQuantity} + ${line.quantity} > 0 THEN 1 ELSE 0 END`,
+        // Only restore availability from the sold-out state (stock was
+        // exactly zero, i.e. reservations emptied it). An item disabled by an
+        // admin keeps inventory > 0 and stays disabled.
+        available: sql`CASE WHEN ${menuItems.inventoryQuantity} = 0 AND ${menuItems.inventoryQuantity} + ${line.quantity} > 0 THEN 1 ELSE ${menuItems.available} END`,
         updatedAt: sql`CURRENT_TIMESTAMP`,
       })
       .where(eq(menuItems.id, line.itemId));
@@ -58,4 +39,56 @@ export async function releaseReservedLines(
     logger.info("inventory.released", { units: released });
   }
   return released;
+}
+
+export async function releaseInventoryForOrder(orderId: string): Promise<number> {
+  const db = createDb();
+  // Only items that track inventory were ever decremented; releasing
+  // untracked items would add phantom stock.
+  const rows = await db
+    .select({
+      menuItemId: orderItems.menuItemId,
+      quantity: orderItems.quantity,
+      trackInventory: menuItems.trackInventory,
+    })
+    .from(orderItems)
+    .innerJoin(menuItems, eq(orderItems.menuItemId, menuItems.id))
+    .where(eq(orderItems.orderId, orderId));
+
+  const tracked: ReleaseLine[] = [];
+  const byId = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.menuItemId || !row.trackInventory) {
+      continue;
+    }
+    const key = row.menuItemId;
+    byId.set(key, (byId.get(key) ?? 0) + row.quantity);
+  }
+  for (const [itemId, quantity] of byId) {
+    tracked.push({ itemId, quantity });
+  }
+
+  if (tracked.length === 0) {
+    return 0;
+  }
+  return releaseLines(db, tracked);
+}
+
+/**
+ * Release in-memory reservations when an order failed before (or right
+ * after) its rows were persisted. `reservedLines` only ever contains lines
+ * that were actually reserved (tracked items), so no extra filtering applies.
+ */
+export async function releaseReservedLines(
+  db: ReturnType<typeof createDb>,
+  lines: { itemId: string | null; quantity: number }[],
+): Promise<number> {
+  const valid = lines.filter(
+    (line): line is ReleaseLine =>
+      line.itemId !== null && line.quantity > 0 && Number.isFinite(line.quantity),
+  );
+  if (valid.length === 0) {
+    return 0;
+  }
+  return releaseLines(db, valid);
 }

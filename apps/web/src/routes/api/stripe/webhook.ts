@@ -98,7 +98,15 @@ export const Route = createFileRoute("/api/stripe/webhook")({
               checkoutProvider: "stripe",
               updatedAt: sql`CURRENT_TIMESTAMP`,
             })
-            .where(and(eq(orders.id, orderId), ne(orders.paymentStatus, "paid")))
+            .where(
+              and(
+                eq(orders.id, orderId),
+                // Only pending orders confirm: cancelled (abandoned/expired)
+                // orders must never be resurrected by a late event.
+                eq(orders.status, "pending"),
+                ne(orders.paymentStatus, "paid"),
+              ),
+            )
             .returning({ id: orders.id });
 
           if (updated.length > 0) {

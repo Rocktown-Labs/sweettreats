@@ -74,7 +74,11 @@ export function getAuth(): ReturnType<typeof betterAuth> {
           role: {
             type: "string",
             required: false,
-            defaultValue: "customer",
+            // No persisted default: new accounts must keep role NULL so the
+            // ADMIN_EMAILS bootstrap can promote them on first verified
+            // sign-in. A persisted "customer" default would short-circuit
+            // promotion (see resolveUserRole). Demote someone by explicitly
+            // setting role='customer' in the database.
             input: false,
           },
         },

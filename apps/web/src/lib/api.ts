@@ -344,8 +344,9 @@ export const getMenu = createServerFn({ method: "GET" }).handler(async () => {
 });
 
 /**
- * Public projection for the storefront: internal fields (Stripe ids, raw
- * inventory counters) never need to leave the server.
+ * Public projection for the storefront: internal Stripe ids never leave the
+ * server. Inventory fields stay — the low-stock badge and quantity caps
+ * depend on them.
  */
 function publicMenuItem(item: typeof menuItems.$inferSelect & { available?: boolean }) {
   return {
@@ -357,12 +358,20 @@ function publicMenuItem(item: typeof menuItems.$inferSelect & { available?: bool
     ingredients: item.ingredients,
     allergens: item.allergens,
     priceCents: item.priceCents,
+    trackInventory: item.trackInventory,
+    inventoryQuantity: item.inventoryQuantity,
     available: item.available ?? true,
     featured: item.featured,
     imageKey: item.imageKey,
     imageAlt: item.imageAlt,
     sortOrder: item.sortOrder,
   };
+}
+
+/** Strip internal Stripe ids from an item before returning it to the public. */
+function stripStripeIds<T extends Record<string, unknown>>(item: T): T {
+  const { stripeProductId: _drop1, stripePriceId: _drop2, ...rest } = item;
+  return rest as T;
 }
 
 export const getTodayMenu = createServerFn({ method: "GET" }).handler(async () => {
@@ -372,14 +381,22 @@ export const getTodayMenu = createServerFn({ method: "GET" }).handler(async () =
       requestedDate: shopDateIso(),
       closed: false,
       closedNote: "",
-      items: seedMenu.map((item) => ({ ...item, todayNote: "", dailyMenuId: null })),
+      items: seedMenu.map((item) => ({
+        ...stripStripeIds(item),
+        todayNote: "",
+        dailyMenuId: null,
+      })),
     };
   }
 
   const db = createDb();
   const today = shopDateIso();
   const menu = await nextAvailableMenu(db, today);
-  return { ...menu, requestedDate: today };
+  return {
+    ...menu,
+    requestedDate: today,
+    items: menu.items.map((item) => stripStripeIds(item)),
+  };
 });
 
 export const getPickupAvailability = createServerFn({ method: "GET" }).handler(async () => {
@@ -474,9 +491,11 @@ export const getMenuItem = createServerFn({ method: "GET" })
     }
 
     const db = createDb();
-    return db.query.menuItems.findFirst({
+    const item = await db.query.menuItems.findFirst({
       where: eq(menuItems.id, id),
     });
+    // Public item page: strip internal Stripe ids, keep the rest.
+    return item ? stripStripeIds(item) : null;
   });
 
 export const getAdminMenuItem = createServerFn({ method: "GET" })
@@ -547,6 +566,9 @@ export const createOrder = createServerFn({ method: "POST" })
     // Timestamp keeps numbers human-sortable; random suffix prevents collisions
     // when two orders land in the same millisecond (unique index would reject).
     const orderNumber = `ST-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`;
+    // Set once the order rows are durably written, so the failure path knows
+    // whether to cancel the persisted order (see the catch below).
+    let orderPersisted = false;
     const pickupMenu = await nextAvailableMenu(db, data.pickupDate);
     const pickupDate = pickupMenu.menuDate;
 
@@ -624,6 +646,7 @@ export const createOrder = createServerFn({ method: "POST" })
         db.insert(orders).values(orderValues),
         db.insert(orderItems).values(orderItemsValues),
       ]);
+      orderPersisted = true;
 
       // 2. Build the Stripe session against the persisted order.
       const baseUrl = publicBaseUrl();
@@ -716,10 +739,19 @@ export const createOrder = createServerFn({ method: "POST" })
       }
 
       if (checkoutUrl && stripeCheckoutSessionId) {
-        await db
-          .update(orders)
-          .set({ stripeCheckoutSessionId, updatedAt: sql`CURRENT_TIMESTAMP` })
-          .where(eq(orders.id, orderId));
+        try {
+          await db
+            .update(orders)
+            .set({ stripeCheckoutSessionId, updatedAt: sql`CURRENT_TIMESTAMP` })
+            .where(eq(orders.id, orderId));
+        } catch (err) {
+          // Transient write failure: the success URL carries an order token
+          // and the webhook resolves by metadata, so the flow still works.
+          logger.warn("stripe.session_id_update_failed", {
+            orderId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       } else {
         // No Stripe (unconfigured or session creation failed): treat as
         // pay-on-pickup so the order is never stranded in pending.
@@ -754,9 +786,22 @@ export const createOrder = createServerFn({ method: "POST" })
 
       return { orderId, orderNumber, checkoutUrl, orderToken };
     } catch (caught) {
-      // The batch insert may have failed before order_items existed, so
-      // release from the in-memory reservation list, not the order rows.
       try {
+        if (orderPersisted) {
+          // The order rows exist: cancel it so the expiry webhook (which only
+          // matches pending orders) ignores the session, then release exactly
+          // once here. Releasing without cancelling would double-restore
+          // when the abandoned session later expires.
+          await db
+            .update(orders)
+            .set({
+              status: "cancelled",
+              paymentStatus: "abandoned",
+              updatedAt: sql`CURRENT_TIMESTAMP`,
+            })
+            .where(eq(orders.id, orderId));
+          logger.warn("order.cancelled_after_create_failure", { orderId });
+        }
         await releaseReservedLines(db, reservedLines);
       } catch (releaseError) {
         logger.error("inventory.release_failed", {

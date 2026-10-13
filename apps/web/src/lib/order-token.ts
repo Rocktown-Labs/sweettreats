@@ -48,7 +48,9 @@ export async function verifyOrderToken(
 ): Promise<boolean> {
   const secret = authSecret();
   if (!secret) {
-    return true;
+    // A missing secret means tokens cannot be verified; deny rather than
+    // authorize every order. Production always sets BETTER_AUTH_SECRET.
+    return false;
   }
   if (!token) {
     return false;
