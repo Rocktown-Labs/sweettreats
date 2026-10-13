@@ -60,7 +60,7 @@ export const web = Cloudflare.Website.Vite(
         RESEND_API_KEY: Config.withDefault(Config.Redacted("RESEND_API_KEY"), Redacted.make("")),
         RESEND_FROM_EMAIL: Config.withDefault(
           Config.String("RESEND_FROM_EMAIL"),
-          "Sweet Treats LR <orders@orders.sweettreatslr.com>",
+          "Sweet Treats LR <noreply@orders.sweettreatslr.com>",
         ),
         GOOGLE_CLIENT_ID: Config.withDefault(Config.String("GOOGLE_CLIENT_ID"), ""),
         GOOGLE_CLIENT_SECRET: Config.withDefault(

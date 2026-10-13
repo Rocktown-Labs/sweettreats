@@ -58,7 +58,7 @@ export async function sendOrderNotifications(orderId: string) {
 
     const resendApiKey = readEnv("RESEND_API_KEY");
     const fromEmail =
-      readEnv("RESEND_FROM_EMAIL") || "Sweet Treats LR <orders@orders.sweettreatslr.com>";
+      readEnv("RESEND_FROM_EMAIL") || "Sweet Treats LR <noreply@orders.sweettreatslr.com>";
     const baseUrl = publicBaseUrl();
 
     const { to: shopRecipients, routedToLocation } = await shopNotificationRecipients(
