@@ -105,7 +105,8 @@ export function getAuth(): ReturnType<typeof betterAuth> {
               to: user.email,
               apiKey: readEnv("RESEND_API_KEY"),
               from:
-                readEnv("RESEND_FROM_EMAIL") || "Sweet Treats LR <orders@orders.sweettreatslr.com>",
+                readEnv("RESEND_FROM_EMAIL") ||
+                "Sweet Treats LR <noreply@orders.sweettreatslr.com>",
             },
           );
         },
@@ -133,7 +134,7 @@ export function getAuth(): ReturnType<typeof betterAuth> {
                 apiKey: readEnv("RESEND_API_KEY"),
                 from:
                   readEnv("RESEND_FROM_EMAIL") ||
-                  "Sweet Treats LR <orders@orders.sweettreatslr.com>",
+                  "Sweet Treats LR <noreply@orders.sweettreatslr.com>",
               },
             );
           },

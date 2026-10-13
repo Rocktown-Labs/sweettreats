@@ -17,7 +17,7 @@ export interface SendEmailResult {
   mocked?: boolean;
 }
 
-const DEFAULT_FROM_EMAIL = "Sweet Treats LR <orders@orders.sweettreatslr.com>";
+const DEFAULT_FROM_EMAIL = "Sweet Treats LR <noreply@orders.sweettreatslr.com>";
 
 export async function sendAdminOrderEmail(
   props: AdminOrderNotificationEmailProps,
