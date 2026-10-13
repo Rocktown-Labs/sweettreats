@@ -369,9 +369,11 @@ function publicMenuItem(item: typeof menuItems.$inferSelect & { available?: bool
 }
 
 /** Strip internal Stripe ids from an item before returning it to the public. */
-function stripStripeIds<T extends Record<string, unknown>>(item: T): T {
+function stripStripeIds<T extends Record<string, unknown>>(
+  item: T,
+): Omit<T, "stripeProductId" | "stripePriceId"> {
   const { stripeProductId: _drop1, stripePriceId: _drop2, ...rest } = item;
-  return rest as T;
+  return rest as Omit<T, "stripeProductId" | "stripePriceId">;
 }
 
 export const getTodayMenu = createServerFn({ method: "GET" }).handler(async () => {
@@ -573,30 +575,37 @@ export const createOrder = createServerFn({ method: "POST" })
     const pickupDate = pickupMenu.menuDate;
 
     const reservedLines: { itemId: string; quantity: number }[] = [];
-    for (const line of lines) {
-      if (line.item.trackInventory) {
-        const reserved = await db
-          .update(menuItems)
-          .set({
-            inventoryQuantity: sql`${menuItems.inventoryQuantity} - ${line.quantity}`,
-            available: sql`CASE WHEN ${menuItems.inventoryQuantity} - ${line.quantity} > 0 THEN 1 ELSE 0 END`,
-            updatedAt: sql`CURRENT_TIMESTAMP`,
-          })
-          .where(
-            and(
-              eq(menuItems.id, line.item.id),
-              eq(menuItems.available, true),
-              gte(menuItems.inventoryQuantity, line.quantity),
-            ),
-          )
-          .returning({ id: menuItems.id });
+    try {
+      for (const line of lines) {
+        if (line.item.trackInventory) {
+          const reserved = await db
+            .update(menuItems)
+            .set({
+              inventoryQuantity: sql`${menuItems.inventoryQuantity} - ${line.quantity}`,
+              available: sql`CASE WHEN ${menuItems.inventoryQuantity} - ${line.quantity} > 0 THEN 1 ELSE 0 END`,
+              updatedAt: sql`CURRENT_TIMESTAMP`,
+            })
+            .where(
+              and(
+                eq(menuItems.id, line.item.id),
+                eq(menuItems.available, true),
+                gte(menuItems.inventoryQuantity, line.quantity),
+              ),
+            )
+            .returning({ id: menuItems.id });
 
-        if (reserved.length === 0) {
-          throw new Error(`${line.item.name} just sold out or does not have enough left.`);
+          if (reserved.length === 0) {
+            throw new Error(`${line.item.name} just sold out or does not have enough left.`);
+          }
+
+          reservedLines.push({ itemId: line.item.id, quantity: line.quantity });
         }
-
-        reservedLines.push({ itemId: line.item.id, quantity: line.quantity });
       }
+    } catch (caught) {
+      // Mid-loop failure: earlier iterations already reserved stock — give
+      // it back before surfacing the error so nothing leaks.
+      await releaseReservedLines(db, reservedLines).catch(() => {});
+      throw caught;
     }
 
     let pickupLocationName = "Bakery Pickup";
