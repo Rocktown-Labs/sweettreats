@@ -35,6 +35,10 @@ export async function handleMediaGet({
   object.writeHttpMetadata(headers);
   headers.set("etag", object.httpEtag);
   headers.set("cache-control", "public, max-age=31536000, immutable");
+  // Defense in depth for uploaded content: never let a stored object run
+  // as a document or script, even if a hostile content type slipped through.
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("content-security-policy", "default-src 'none'; sandbox");
 
   return new Response(object.body, { headers });
 }

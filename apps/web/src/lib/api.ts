@@ -10,20 +10,35 @@ import {
 } from "@sweettreats/db/schema/index";
 import { env } from "@sweettreats/env/server";
 import { createServerFn } from "@tanstack/react-start";
-import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import Stripe from "stripe";
 
-import { adminEmails } from "./auth-server";
+import { currentUserEmail, requireAdmin } from "./auth-server";
 import { sendOrderNotifications } from "./order-emails";
+import { createOrderToken, verifyOrderToken } from "./order-token";
+import { releaseReservedLines } from "./inventory";
+import { clientIpFromHeaders, rateLimit } from "./rate-limit";
+import { PICKUP_WINDOW_DAYS, addDaysIso, isPickupSlotBookable, shopDateIso } from "./pickup";
+import { logger } from "./logger";
 
-function getStripeClient() {
+let stripeClient: Stripe | null | undefined;
+
+function getStripeClient(): Stripe | null {
+  if (stripeClient !== undefined) {
+    return stripeClient;
+  }
   const stripeSecretKey = (env as any).STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY || "";
-  if (!stripeSecretKey) return null;
-  return new Stripe(stripeSecretKey, { apiVersion: "2023-10-16" as any });
+  stripeClient = stripeSecretKey ? new Stripe(stripeSecretKey) : null;
+  return stripeClient;
 }
 
-import { logger } from "./logger";
+/** Public base URL for links built for emails and Stripe redirects. */
+function publicBaseUrl(): string {
+  const fromEnv =
+    (env as any).BETTER_AUTH_URL || process.env.BETTER_AUTH_URL || "https://sweettreatslr.com";
+  return String(fromEnv).replace(/\/$/, "");
+}
 
 const cartLineSchema = z.object({
   id: z.string().min(1),
@@ -38,7 +53,7 @@ const checkoutSchema = z.object({
   pickupDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Choose a valid pickup date."),
   pickupTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Choose a valid pickup time."),
   notes: z.string().max(500).optional().default(""),
-  items: z.array(cartLineSchema).min(1),
+  items: z.array(cartLineSchema).min(1).max(50),
 });
 
 const pickupLocationSchema = z.object({
@@ -47,6 +62,13 @@ const pickupLocationSchema = z.object({
   address: z.string().min(3, "Address is required"),
   instructions: z.string().optional().default(""),
   phone: z.string().optional().default(""),
+  contactEmail: z
+    .string()
+    .refine((value) => value === "" || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value), {
+      message: "Enter a valid contact email or leave it blank.",
+    })
+    .optional()
+    .default(""),
   active: z.boolean().default(true),
   sortOrder: z.number().int().default(0),
 });
@@ -59,7 +81,7 @@ const itemSchema = z.object({
   description: z.string().min(8),
   ingredients: z.string().optional().default(""),
   allergens: z.string().optional().default(""),
-  priceCents: z.number().int().min(1),
+  priceCents: z.number().int().min(1).max(100000),
   inventoryQuantity: z.number().int().min(0).default(0),
   trackInventory: z.boolean().default(false),
   available: z.boolean(),
@@ -76,6 +98,9 @@ const uploadSchema = z.object({
   contentType: z.string().min(3),
   base64: z.string().min(1),
 });
+
+const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/avif"]);
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 const dailyMenuSchema = z.object({
   menuItemId: z.string().min(1),
@@ -99,68 +124,74 @@ function normalizeSlug(value: string) {
     .replace(/(^-|-$)/g, "");
 }
 
-function shopDateIso(date = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Chicago",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const read = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
-  return `${read("year")}-${read("month")}-${read("day")}`;
-}
+type MenuDaySettings = typeof shopDaySettings.$inferSelect;
+type MenuItemRow = typeof menuItems.$inferSelect;
+type DailyMenuRow = typeof dailyMenuItems.$inferSelect;
 
-function addDaysIso(dateIso: string, days: number) {
-  const [year, month, day] = dateIso.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day + days));
-  return date.toISOString().slice(0, 10);
-}
+/**
+ * Resolve the first bookable menu on or after `startDate`, within the next
+ * `limit` days. Fetched with a bounded range query (3 queries total) instead
+ * of a per-day query loop, so home/menu/checkout loads stay fast.
+ */
+async function nextAvailableMenu(db: ReturnType<typeof createDb>, startDate = shopDateIso()) {
+  const limit = 21;
+  const endDate = addDaysIso(startDate, limit);
 
-async function menuForDate(db: ReturnType<typeof createDb>, menuDate: string) {
-  const day = await db.query.shopDaySettings.findFirst({
-    where: eq(shopDaySettings.dayDate, menuDate),
-  });
+  const [daySettings, itemRows, dailyRows] = await Promise.all([
+    db
+      .select()
+      .from(shopDaySettings)
+      .where(and(gte(shopDaySettings.dayDate, startDate), lte(shopDaySettings.dayDate, endDate))),
+    db.select().from(menuItems).orderBy(asc(menuItems.sortOrder), asc(menuItems.name)),
+    db
+      .select()
+      .from(dailyMenuItems)
+      .where(and(gte(dailyMenuItems.menuDate, startDate), lte(dailyMenuItems.menuDate, endDate))),
+  ]);
 
-  if (day?.closed) {
-    return { menuDate, closed: true, closedNote: day.note, items: [] };
+  const closedByDate = new Map<string, MenuDaySettings>();
+  for (const day of daySettings) {
+    closedByDate.set(day.dayDate, day);
+  }
+  const dailyByItemDate = new Map<string, DailyMenuRow>();
+  for (const daily of dailyRows) {
+    dailyByItemDate.set(`${daily.menuItemId}:${daily.menuDate}`, daily);
   }
 
-  const rows = await db
-    .select({
-      item: menuItems,
-      daily: dailyMenuItems,
-    })
-    .from(menuItems)
-    .leftJoin(
-      dailyMenuItems,
-      and(eq(dailyMenuItems.menuItemId, menuItems.id), eq(dailyMenuItems.menuDate, menuDate)),
-    )
-    .orderBy(asc(menuItems.sortOrder), asc(menuItems.name));
+  const decorate = (menuDate: string) =>
+    itemRows
+      .map((item: MenuItemRow) => {
+        const daily = dailyByItemDate.get(`${item.id}:${menuDate}`);
+        return {
+          ...item,
+          todayNote: daily?.note ?? "",
+          available:
+            (daily?.availableOverride ?? item.available) &&
+            (!item.trackInventory || item.inventoryQuantity > 0),
+          featured: daily?.featuredOverride ?? item.featured,
+          dailyMenuId: daily?.id ?? null,
+        };
+      })
+      .filter((item) => item.available || item.featured);
 
-  const items = rows
-    .map(({ item, daily }) => ({
-      ...item,
-      todayNote: daily?.note ?? "",
-      available:
-        (daily?.availableOverride ?? item.available) &&
-        (!item.trackInventory || item.inventoryQuantity > 0),
-      featured: daily?.featuredOverride ?? item.featured,
-      dailyMenuId: daily?.id ?? null,
-    }))
-    .filter((item) => item.available || item.featured);
-
-  return { menuDate, closed: false, closedNote: day?.note ?? "", items };
-}
-
-async function nextAvailableMenu(db: ReturnType<typeof createDb>, startDate = shopDateIso()) {
-  for (let offset = 0; offset < 21; offset += 1) {
-    const menu = await menuForDate(db, addDaysIso(startDate, offset));
-    if (!menu.closed && menu.items.some((item) => item.available)) {
-      return menu;
+  for (let offset = 0; offset < limit; offset += 1) {
+    const date = addDaysIso(startDate, offset);
+    const day = closedByDate.get(date);
+    if (day?.closed) {
+      continue;
+    }
+    const items = decorate(date);
+    if (items.some((item) => item.available)) {
+      return { menuDate: date, closed: false, closedNote: day?.note ?? "", items };
     }
   }
 
-  return menuForDate(db, startDate);
+  return {
+    menuDate: startDate,
+    closed: false,
+    closedNote: closedByDate.get(startDate)?.note ?? "",
+    items: decorate(startDate),
+  };
 }
 
 const seedMenu = [
@@ -238,6 +269,7 @@ export const seedPickupLocations: PickupLocation[] = [
     address: "Downtown Little Rock (River Market area), Little Rock, AR",
     instructions: "Pick up at the front counter. Curbside pickup available upon request.",
     phone: "(501) 555-0142",
+    contactEmail: "",
     active: true,
     sortOrder: 0,
     createdAt: "2026-07-01 00:00:00",
@@ -249,6 +281,7 @@ export const seedPickupLocations: PickupLocation[] = [
     address: "North Little Rock (Argenta / Main St District), North Little Rock, AR",
     instructions: "Partner pickup desk. State your name and Sweet Treats order number.",
     phone: "(501) 555-0188",
+    contactEmail: "",
     active: true,
     sortOrder: 1,
     createdAt: "2026-07-01 00:00:00",
@@ -264,37 +297,14 @@ async function getOrCreatePickupLocations(db: ReturnType<typeof createDb>) {
       .orderBy(asc(pickupLocations.sortOrder), asc(pickupLocations.name));
 
     if (existing.length === 0) {
+      // First run on a fresh database: seed the defaults once. After this,
+      // reads never write; renames/data fixes belong in SQL migrations.
       try {
         await db.insert(pickupLocations).values(seedPickupLocations);
-        return seedPickupLocations;
       } catch {
-        return seedPickupLocations;
+        // A concurrent first request may have seeded already; fall through.
       }
-    }
-
-    // Auto-migrate legacy names to official Little Rock (LR) and North Little Rock (NLR)
-    for (const loc of existing) {
-      if (loc.id === "loc-downtown" && loc.name !== "Little Rock Pickup (LR)") {
-        await db
-          .update(pickupLocations)
-          .set({
-            name: "Little Rock Pickup (LR)",
-            address: "Downtown Little Rock (River Market area), Little Rock, AR",
-          })
-          .where(eq(pickupLocations.id, "loc-downtown"));
-        loc.name = "Little Rock Pickup (LR)";
-        loc.address = "Downtown Little Rock (River Market area), Little Rock, AR";
-      } else if (loc.id === "loc-west-lr" && loc.name !== "North Little Rock Pickup (NLR)") {
-        await db
-          .update(pickupLocations)
-          .set({
-            name: "North Little Rock Pickup (NLR)",
-            address: "North Little Rock (Argenta / Main St District), North Little Rock, AR",
-          })
-          .where(eq(pickupLocations.id, "loc-west-lr"));
-        loc.name = "North Little Rock Pickup (NLR)";
-        loc.address = "North Little Rock (Argenta / Main St District), North Little Rock, AR";
-      }
+      return seedPickupLocations;
     }
 
     return existing;
@@ -315,19 +325,9 @@ function dbRequired() {
   return createDb();
 }
 
-async function currentUserEmail() {
-  const { currentUserEmail: getUserEmail } = await import("./auth-server");
-  return getUserEmail();
-}
-
-async function requireAdmin() {
-  const { requireAdmin: checkAdmin } = await import("./auth-server");
-  await checkAdmin();
-}
-
 export const getMenu = createServerFn({ method: "GET" }).handler(async () => {
   if (!hasDatabase()) {
-    return seedMenu;
+    return seedMenu.map(publicMenuItem);
   }
 
   const db = createDb();
@@ -335,11 +335,46 @@ export const getMenu = createServerFn({ method: "GET" }).handler(async () => {
     .select()
     .from(menuItems)
     .orderBy(asc(menuItems.sortOrder), asc(menuItems.name));
-  return items.map((item) => ({
-    ...item,
-    available: item.available && (!item.trackInventory || item.inventoryQuantity > 0),
-  }));
+  return items.map((item) =>
+    publicMenuItem({
+      ...item,
+      available: item.available && (!item.trackInventory || item.inventoryQuantity > 0),
+    }),
+  );
 });
+
+/**
+ * Public projection for the storefront: internal Stripe ids never leave the
+ * server. Inventory fields stay — the low-stock badge and quantity caps
+ * depend on them.
+ */
+function publicMenuItem(item: typeof menuItems.$inferSelect & { available?: boolean }) {
+  return {
+    id: item.id,
+    slug: item.slug,
+    name: item.name,
+    category: item.category,
+    description: item.description,
+    ingredients: item.ingredients,
+    allergens: item.allergens,
+    priceCents: item.priceCents,
+    trackInventory: item.trackInventory,
+    inventoryQuantity: item.inventoryQuantity,
+    available: item.available ?? true,
+    featured: item.featured,
+    imageKey: item.imageKey,
+    imageAlt: item.imageAlt,
+    sortOrder: item.sortOrder,
+  };
+}
+
+/** Strip internal Stripe ids from an item before returning it to the public. */
+function stripStripeIds<T extends Record<string, unknown>>(
+  item: T,
+): Omit<T, "stripeProductId" | "stripePriceId"> {
+  const { stripeProductId: _drop1, stripePriceId: _drop2, ...rest } = item;
+  return rest as Omit<T, "stripeProductId" | "stripePriceId">;
+}
 
 export const getTodayMenu = createServerFn({ method: "GET" }).handler(async () => {
   if (!hasDatabase()) {
@@ -348,14 +383,22 @@ export const getTodayMenu = createServerFn({ method: "GET" }).handler(async () =
       requestedDate: shopDateIso(),
       closed: false,
       closedNote: "",
-      items: seedMenu.map((item) => ({ ...item, todayNote: "", dailyMenuId: null })),
+      items: seedMenu.map((item) => ({
+        ...stripStripeIds(item),
+        todayNote: "",
+        dailyMenuId: null,
+      })),
     };
   }
 
   const db = createDb();
   const today = shopDateIso();
   const menu = await nextAvailableMenu(db, today);
-  return { ...menu, requestedDate: today };
+  return {
+    ...menu,
+    requestedDate: today,
+    items: menu.items.map((item) => stripStripeIds(item)),
+  };
 });
 
 export const getPickupAvailability = createServerFn({ method: "GET" }).handler(async () => {
@@ -412,6 +455,7 @@ export const savePickupLocation = createServerFn({ method: "POST" })
       address: data.address,
       instructions: data.instructions,
       phone: data.phone,
+      contactEmail: data.contactEmail,
       active: data.active,
       sortOrder: data.sortOrder,
       updatedAt: sql`CURRENT_TIMESTAMP`,
@@ -449,9 +493,11 @@ export const getMenuItem = createServerFn({ method: "GET" })
     }
 
     const db = createDb();
-    return db.query.menuItems.findFirst({
+    const item = await db.query.menuItems.findFirst({
       where: eq(menuItems.id, id),
     });
+    // Public item page: strip internal Stripe ids, keep the rest.
+    return item ? stripStripeIds(item) : null;
   });
 
 export const getAdminMenuItem = createServerFn({ method: "GET" })
@@ -475,6 +521,27 @@ export const createOrder = createServerFn({ method: "POST" })
   .validator((data: unknown) => checkoutSchema.parse(data))
   .handler(async ({ data }) => {
     const db = dbRequired();
+
+    // Rate limit by client IP: order creation writes to D1, syncs Stripe and
+    // triggers notification emails, so it must not be spammable.
+    const { getRequestHeaders } = await import("@tanstack/react-start/server");
+    const ip = clientIpFromHeaders(getRequestHeaders());
+    const limit = await rateLimit(db, "create-order", ip, 10 * 60, 6);
+    if (!limit.ok) {
+      throw new Error("Too many orders sent from this connection. Try again in a few minutes.");
+    }
+
+    // Server-side pickup validation: window bounds and a bookable slot.
+    // The client enforces the same rules, but the server must not trust it.
+    const today = shopDateIso();
+    const maxDate = addDaysIso(today, PICKUP_WINDOW_DAYS);
+    if (data.pickupDate < today || data.pickupDate > maxDate) {
+      throw new Error("Choose a pickup date within the next 30 days.");
+    }
+    if (!isPickupSlotBookable(data.pickupDate, data.pickupTime)) {
+      throw new Error("That pickup time is not available. Pick another slot.");
+    }
+
     const ids = data.items.map((item) => item.id);
     const foundItems = await db.select().from(menuItems).where(inArray(menuItems.id, ids));
     const byId = new Map(foundItems.map((item) => [item.id, item]));
@@ -498,45 +565,103 @@ export const createOrder = createServerFn({ method: "POST" })
     const subtotalCents = lines.reduce((sum, line) => sum + line.lineTotalCents, 0);
     const { userId } = await currentUserEmail();
     const orderId = crypto.randomUUID();
-    const orderNumber = `ST-${Date.now().toString(36).toUpperCase()}`;
+    // Timestamp keeps numbers human-sortable; random suffix prevents collisions
+    // when two orders land in the same millisecond (unique index would reject).
+    const orderNumber = `ST-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`;
+    // Set once the order rows are durably written, so the failure path knows
+    // whether to cancel the persisted order (see the catch below).
+    let orderPersisted = false;
     const pickupMenu = await nextAvailableMenu(db, data.pickupDate);
     const pickupDate = pickupMenu.menuDate;
 
     const reservedLines: { itemId: string; quantity: number }[] = [];
-    for (const line of lines) {
-      if (line.item.trackInventory) {
-        const reserved = await db
-          .update(menuItems)
-          .set({
-            inventoryQuantity: sql`${menuItems.inventoryQuantity} - ${line.quantity}`,
-            available: sql`CASE WHEN ${menuItems.inventoryQuantity} - ${line.quantity} > 0 THEN 1 ELSE 0 END`,
-            updatedAt: sql`CURRENT_TIMESTAMP`,
-          })
-          .where(
-            and(
-              eq(menuItems.id, line.item.id),
-              eq(menuItems.available, true),
-              gte(menuItems.inventoryQuantity, line.quantity),
-            ),
-          )
-          .returning({ id: menuItems.id });
+    try {
+      for (const line of lines) {
+        if (line.item.trackInventory) {
+          const reserved = await db
+            .update(menuItems)
+            .set({
+              inventoryQuantity: sql`${menuItems.inventoryQuantity} - ${line.quantity}`,
+              available: sql`CASE WHEN ${menuItems.inventoryQuantity} - ${line.quantity} > 0 THEN 1 ELSE 0 END`,
+              updatedAt: sql`CURRENT_TIMESTAMP`,
+            })
+            .where(
+              and(
+                eq(menuItems.id, line.item.id),
+                eq(menuItems.available, true),
+                gte(menuItems.inventoryQuantity, line.quantity),
+              ),
+            )
+            .returning({ id: menuItems.id });
 
-        if (reserved.length === 0) {
-          throw new Error(`${line.item.name} just sold out or does not have enough left.`);
+          if (reserved.length === 0) {
+            throw new Error(`${line.item.name} just sold out or does not have enough left.`);
+          }
+
+          reservedLines.push({ itemId: line.item.id, quantity: line.quantity });
         }
-
-        reservedLines.push({ itemId: line.item.id, quantity: line.quantity });
       }
+    } catch (caught) {
+      // Mid-loop failure: earlier iterations already reserved stock — give
+      // it back before surfacing the error so nothing leaks.
+      await releaseReservedLines(db, reservedLines).catch(() => {});
+      throw caught;
+    }
+
+    let pickupLocationName = "Bakery Pickup";
+    if (data.pickupLocationId) {
+      const loc = await db.query.pickupLocations
+        .findFirst({
+          where: eq(pickupLocations.id, data.pickupLocationId),
+        })
+        .catch(() => null);
+      pickupLocationName =
+        loc?.name ??
+        seedPickupLocations.find((l) => l.id === data.pickupLocationId)?.name ??
+        pickupLocationName;
     }
 
     try {
-      const { getRequestHeaders } = await import("@tanstack/react-start/server");
-      const requestHeaders = getRequestHeaders();
-      const referer = requestHeaders.get("referer");
-      const origin = referer ? new URL(referer).origin : "http://localhost:8787";
+      // 1. Persist the order FIRST so a paid Stripe session can never point at
+      //    an order that failed to insert. order + items go in one atomic batch.
+      const orderValues = {
+        id: orderId,
+        orderNumber,
+        userId,
+        customerName: data.name,
+        customerEmail: data.email,
+        customerPhone: data.phone,
+        pickupLocationId: data.pickupLocationId,
+        pickupLocationName,
+        pickupDate,
+        pickupTime: data.pickupTime,
+        notes: data.notes,
+        status: "pending" as const,
+        subtotalCents,
+      };
 
-      const successUrl = `${origin}/order/success?orderId=${orderId}&session_id={CHECKOUT_SESSION_ID}`;
-      const cancelUrl = `${origin}/checkout`;
+      const orderItemsValues = lines.map((line) => ({
+        id: crypto.randomUUID(),
+        orderId,
+        menuItemId: line.item.id,
+        itemNameSnapshot: line.item.name,
+        itemDescriptionSnapshot: line.item.description,
+        unitPriceCentsSnapshot: line.item.priceCents,
+        quantity: line.quantity,
+        lineTotalCents: line.lineTotalCents,
+      }));
+
+      await db.batch([
+        db.insert(orders).values(orderValues),
+        db.insert(orderItems).values(orderItemsValues),
+      ]);
+      orderPersisted = true;
+
+      // 2. Build the Stripe session against the persisted order.
+      const baseUrl = publicBaseUrl();
+      const orderToken = await createOrderToken(orderId);
+      const successUrl = `${baseUrl}/order/success?orderId=${orderId}&t=${orderToken}&session_id={CHECKOUT_SESSION_ID}`;
+      const cancelUrl = `${baseUrl}/checkout`;
 
       const stripe = getStripeClient();
       let checkoutUrl: string | null = null;
@@ -604,6 +729,9 @@ export const createOrder = createServerFn({ method: "POST" })
             mode: "payment",
             success_url: successUrl,
             cancel_url: cancelUrl,
+            // Abandoned sessions expire quickly so reserved inventory is
+            // released by the checkout.session.expired webhook.
+            expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
             customer_email: data.email || undefined,
             metadata: {
               orderId,
@@ -619,97 +747,83 @@ export const createOrder = createServerFn({ method: "POST" })
         }
       }
 
-      let pickupLocationName = "Bakery Pickup";
-      if (data.pickupLocationId) {
+      if (checkoutUrl && stripeCheckoutSessionId) {
         try {
-          const loc = await db.query.pickupLocations.findFirst({
-            where: eq(pickupLocations.id, data.pickupLocationId),
+          await db
+            .update(orders)
+            .set({ stripeCheckoutSessionId, updatedAt: sql`CURRENT_TIMESTAMP` })
+            .where(eq(orders.id, orderId));
+        } catch (err) {
+          // Transient write failure: the success URL carries an order token
+          // and the webhook resolves by metadata, so the flow still works.
+          logger.warn("stripe.session_id_update_failed", {
+            orderId,
+            error: err instanceof Error ? err.message : String(err),
           });
-          if (loc) {
-            pickupLocationName = loc.name;
-          } else {
-            const fallback = seedPickupLocations.find((l) => l.id === data.pickupLocationId);
-            if (fallback) {
-              pickupLocationName = fallback.name;
-            }
-          }
-        } catch {
-          const fallback = seedPickupLocations.find((l) => l.id === data.pickupLocationId);
-          if (fallback) {
-            pickupLocationName = fallback.name;
-          }
         }
+      } else {
+        // No Stripe (unconfigured or session creation failed): treat as
+        // pay-on-pickup so the order is never stranded in pending.
+        await db
+          .update(orders)
+          .set({
+            status: "confirmed",
+            paymentStatus: "pay_on_pickup",
+            checkoutProvider: "manual",
+            updatedAt: sql`CURRENT_TIMESTAMP`,
+          })
+          .where(eq(orders.id, orderId));
       }
 
-      await db.insert(orders).values({
-        id: orderId,
-        orderNumber,
-        userId: userId,
-        customerName: data.name,
-        customerEmail: data.email,
-        customerPhone: data.phone,
-        pickupLocationId: data.pickupLocationId,
-        pickupLocationName,
-        pickupDate,
-        pickupTime: data.pickupTime,
-        notes: data.notes,
-        status: checkoutUrl ? "pending" : "confirmed",
-        stripeCheckoutSessionId,
-        subtotalCents,
-      });
-
-      await db.insert(orderItems).values(
-        lines.map((line) => ({
-          id: crypto.randomUUID(),
-          orderId,
-          menuItemId: line.item.id,
-          itemNameSnapshot: line.item.name,
-          itemDescriptionSnapshot: line.item.description,
-          unitPriceCentsSnapshot: line.item.priceCents,
-          quantity: line.quantity,
-          lineTotalCents: line.lineTotalCents,
-        })),
-      );
-
+      // PII stays out of logs: identify orders by id/number only.
       logger.info("order.created", {
         orderId,
         orderNumber,
         itemCount: lines.reduce((sum, line) => sum + line.quantity, 0),
         subtotalCents,
-        customerEmail: data.email,
-        customerPhone: data.phone,
         pickupLocationId: data.pickupLocationId,
         pickupLocationName,
         pickupDate,
         pickupTime: data.pickupTime,
         userId,
-        dispatchNote: `Call location (${pickupLocationName}) to confirm ticket. Future: automated location routing.`,
+        paymentFlow: checkoutUrl ? "stripe" : "pay_on_pickup",
       });
 
       if (!checkoutUrl) {
         await sendOrderNotifications(orderId);
       }
 
-      return { orderId, orderNumber, checkoutUrl };
+      return { orderId, orderNumber, checkoutUrl, orderToken };
     } catch (caught) {
-      await Promise.all(
-        reservedLines.map((line) =>
-          db
-            .update(menuItems)
+      try {
+        if (orderPersisted) {
+          // The order rows exist: cancel it so the expiry webhook (which only
+          // matches pending orders) ignores the session, then release exactly
+          // once here. Releasing without cancelling would double-restore
+          // when the abandoned session later expires.
+          await db
+            .update(orders)
             .set({
-              inventoryQuantity: sql`${menuItems.inventoryQuantity} + ${line.quantity}`,
-              available: true,
+              status: "cancelled",
+              paymentStatus: "abandoned",
               updatedAt: sql`CURRENT_TIMESTAMP`,
             })
-            .where(eq(menuItems.id, line.itemId)),
-        ),
-      );
+            .where(eq(orders.id, orderId));
+          logger.warn("order.cancelled_after_create_failure", { orderId });
+        }
+        await releaseReservedLines(db, reservedLines);
+      } catch (releaseError) {
+        logger.error("inventory.release_failed", {
+          orderId,
+          error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+        });
+      }
       throw caught;
     }
   });
 
 export const getOrder = createServerFn({ method: "GET" })
-  .validator((data: { id: string; sessionId?: string }) => data)
+  .validator((data: { id: string; token?: string; sessionId?: string }) => data)
   .handler(async ({ data }) => {
     const db = dbRequired();
     let order = await db.query.orders.findFirst({
@@ -717,7 +831,29 @@ export const getOrder = createServerFn({ method: "GET" })
       with: { items: true, pickupLocation: true },
     });
 
-    if (order && order.status === "pending" && data.sessionId) {
+    if (!order) {
+      return null;
+    }
+
+    // Ownership: any of these proves the caller is entitled to this order.
+    // Knowing a bare order UUID is never enough to read customer PII.
+    const { userId, email } = await currentUserEmail();
+    const ownsAsUser =
+      (userId && order.userId === userId) ||
+      (email && order.customerEmail.toLowerCase() === email.toLowerCase());
+    const validToken = await verifyOrderToken(order.id, data.token);
+    const stripeSessionMatches =
+      Boolean(data.sessionId) &&
+      Boolean(order.stripeCheckoutSessionId) &&
+      data.sessionId === order.stripeCheckoutSessionId;
+
+    if (!ownsAsUser && !validToken && !stripeSessionMatches) {
+      return null;
+    }
+
+    // Sync payment state from Stripe, but never send email from a GET path —
+    // the webhook is the notification path, and GETs must be side-effect free.
+    if (order.status === "pending" && stripeSessionMatches && data.sessionId) {
       const stripe = getStripeClient();
       if (stripe) {
         try {
@@ -729,10 +865,9 @@ export const getOrder = createServerFn({ method: "GET" })
                 status: "confirmed",
                 paymentStatus: "paid",
                 checkoutProvider: "stripe",
+                updatedAt: sql`CURRENT_TIMESTAMP`,
               })
               .where(eq(orders.id, data.id));
-
-            await sendOrderNotifications(data.id);
 
             order = await db.query.orders.findFirst({
               where: eq(orders.id, data.id),
@@ -1003,16 +1138,33 @@ export const uploadMenuPhoto = createServerFn({ method: "POST" })
   .validator((data: unknown) => uploadSchema.parse(data))
   .handler(async ({ data }) => {
     await requireAdmin();
-    const safeName = data.fileName.toLowerCase().replace(/[^a-z0-9.]+/g, "-");
-    const key = `items/${crypto.randomUUID()}-${safeName}`;
+
+    // Hardened upload: image content types only, and a hard size cap so a
+    // stray base64 payload can't exhaust worker memory.
+    const contentType = data.contentType.toLowerCase();
+    if (!ALLOWED_IMAGE_TYPES.has(contentType)) {
+      throw new Error("Only PNG, JPEG, WebP, or AVIF images can be uploaded.");
+    }
+    // base64 inflates by ~4/3; check the decoded size, not the string length.
+    const decodedBytes = Math.floor((data.base64.length * 3) / 4);
+    if (decodedBytes > MAX_UPLOAD_BYTES) {
+      throw new Error("Images must be smaller than 5 MB.");
+    }
+
+    const extension = contentType.split("/")[1] ?? "png";
+    const safeName = data.fileName
+      .toLowerCase()
+      .replace(/[^a-z0-9.]+/g, "-")
+      .replace(/^[.-]+|[.-]+$/g, "");
+    const key = `items/${crypto.randomUUID()}-${safeName}.${extension}`;
     const bytes = Uint8Array.from(atob(data.base64), (char) => char.charCodeAt(0));
     await env.MEDIA.put(key, bytes, {
       httpMetadata: {
-        contentType: data.contentType,
+        contentType,
       },
     });
 
-    logger.info("admin.menu_photo_uploaded", { key, contentType: data.contentType });
+    logger.info("admin.menu_photo_uploaded", { key, contentType, bytes: decodedBytes });
 
     return { key };
   });
@@ -1148,5 +1300,3 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
     logger.info("admin.order_status_updated", { id: data.id, status: data.status });
     return { ok: true };
   });
-
-export const getAdminEmails = createServerFn({ method: "GET" }).handler(async () => adminEmails());

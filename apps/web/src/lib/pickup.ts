@@ -73,6 +73,17 @@ export function shopNow(now = new Date()) {
   };
 }
 
+/** Today's calendar date in the shop's time zone (YYYY-MM-DD). */
+export function shopDateIso(date = new Date()) {
+  return shopNow(date).date;
+}
+
+/** True when a requested pickup slot is bookable: in range and not in the past. */
+export function isPickupSlotBookable(dateIso: string, time: string, now = shopNow()): boolean {
+  const slots = pickupSlots(dateIso, now);
+  return slots.some((slot) => slot.value === time && !slot.disabled);
+}
+
 export function pickupSlots(dateIso: string, now = shopNow()): PickupSlot[] {
   const slots: PickupSlot[] = [];
   for (

@@ -34,19 +34,36 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Prepare stage-scoped secrets
+        env:
+          IS_PROD: ${{ env.STAGE == 'prod' }}
+          PROD_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+        run: |
+          if [ "$IS_PROD" = "true" ]; then
+            echo "STAGE_BETTER_AUTH_SECRET=$PROD_AUTH_SECRET" >> "$GITHUB_ENV"
+          else
+            # Ephemeral per-deploy signing key: preview workers can never
+            # leak or reuse the production session secret.
+            echo "STAGE_BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          fi
+
       - name: Deploy with Alchemy
         run: bun --cwd packages/infra alchemy deploy --stage ${{ env.STAGE }} --yes
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          BETTER_AUTH_SECRET: ${{ env.STAGE_BETTER_AUTH_SECRET }}
+          # Production-only integrations: previews deploy with these empty so
+          # PR code can never touch live payment, email, or identity
+          # credentials (or production data — previews get their own
+          # stage-suffixed D1 database and R2 bucket).
+          RESEND_API_KEY: ${{ env.STAGE == 'prod' && secrets.RESEND_API_KEY || '' }}
           RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-          STRIPE_PUBLISHABLE_KEY: ${{ secrets.STRIPE_PUBLISHABLE_KEY }}
-          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          GOOGLE_CLIENT_ID: ${{ env.STAGE == 'prod' && secrets.GOOGLE_CLIENT_ID || '' }}
+          GOOGLE_CLIENT_SECRET: ${{ env.STAGE == 'prod' && secrets.GOOGLE_CLIENT_SECRET || '' }}
+          STRIPE_SECRET_KEY: ${{ env.STAGE == 'prod' && secrets.STRIPE_SECRET_KEY || '' }}
+          STRIPE_PUBLISHABLE_KEY: ${{ env.STAGE == 'prod' && secrets.STRIPE_PUBLISHABLE_KEY || '' }}
+          STRIPE_WEBHOOK_SECRET: ${{ env.STAGE == 'prod' && secrets.STRIPE_WEBHOOK_SECRET || '' }}
           PULL_REQUEST: ${{ github.event.number }}
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -111,5 +128,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          # Destroy only reads state; no production secret is ever needed here.
+          BETTER_AUTH_SECRET: destroy-only-placeholder-not-a-real-secret
           PULL_REQUEST: ${{ github.event.number }}

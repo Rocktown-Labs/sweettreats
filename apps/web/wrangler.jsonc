@@ -1,4 +1,9 @@
 {
+  // Local development config for `wrangler dev` only.
+  // Production deploys go through Alchemy (packages/infra/alchemy.run.ts) —
+  // never deploy with `wrangler deploy`.
+  // Secrets (BETTER_AUTH_SECRET, etc.) live in apps/web/.dev.vars, which is
+  // gitignored, never in this committed file.
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "sweettreats",
   "main": "./worker.ts",
@@ -13,8 +18,6 @@
   },
   "vars": {
     "ADMIN_EMAILS": "lauryan0311@gmail.com,admin@sweettreatslr.com,stlr@demo.com,cg@rocktownlabs.com",
-    "CORS_ORIGIN": "http://localhost:8787",
-    "BETTER_AUTH_SECRET": "local_dev_secret_32_characters_long_min",
     "BETTER_AUTH_URL": "http://localhost:8787",
   },
   "d1_databases": [

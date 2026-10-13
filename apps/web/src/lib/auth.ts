@@ -1,16 +1,23 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequestHeaders } from "@tanstack/react-start/server";
 import { redirect } from "@tanstack/react-router";
-import { env } from "@sweettreats/env/server";
 
+/**
+ * Public runtime config for the root loader. Deliberately contains no admin
+ * identity information — the admin roster must never ship to the browser.
+ */
 export const getAuthRuntimeConfig = createServerFn({ method: "GET" }).handler(async () => ({
-  clerkConfigured: false,
   betterAuthConfigured: true,
-  adminEmails: String(env.ADMIN_EMAILS ?? "")
-    .split(",")
-    .map((email) => email.trim().toLowerCase())
-    .filter(Boolean),
 }));
+
+/**
+ * Session-aware admin check for UI gating. Returns a boolean only, so the
+ * admin email list can never leak to the client.
+ */
+export const isCurrentUserAdmin = createServerFn({ method: "GET" }).handler(async () => {
+  const { isCurrentUserAdmin: check } = await import("./auth-server");
+  return check();
+});
 
 export const requireSignedIn = createServerFn({ method: "GET" })
   .validator((redirectTo: string) => redirectTo)

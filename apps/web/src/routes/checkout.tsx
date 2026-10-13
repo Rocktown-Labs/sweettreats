@@ -216,7 +216,10 @@ function CheckoutPage() {
             if (result.checkoutUrl) {
               window.location.href = result.checkoutUrl;
             } else {
-              await navigate({ to: "/order/success", search: { orderId: result.orderId } });
+              await navigate({
+                to: "/order/success",
+                search: { orderId: result.orderId, t: result.orderToken },
+              });
             }
           } catch (caught) {
             setError(

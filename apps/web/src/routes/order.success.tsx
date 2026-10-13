@@ -1,20 +1,29 @@
-import { Link, createFileRoute, useNavigate, useLoaderData } from "@tanstack/react-router";
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { z } from "zod";
 import { useEffect, useState } from "react";
+import { useServerFn } from "@tanstack/react-start";
 import { MapPin } from "lucide-react";
 import { authClient } from "../lib/auth-client";
 
 import { getOrder } from "../lib/api";
+import { isCurrentUserAdmin } from "../lib/auth";
 import { formatMoney } from "../lib/format";
 
 export const Route = createFileRoute("/order/success")({
   validateSearch: z.object({
     orderId: z.string().optional(),
+    t: z.string().optional(),
     session_id: z.string().optional(),
   }),
-  loaderDeps: ({ search }) => ({ orderId: search.orderId, sessionId: search.session_id }),
+  loaderDeps: ({ search }) => ({
+    orderId: search.orderId,
+    token: search.t,
+    sessionId: search.session_id,
+  }),
   loader: ({ deps }) =>
-    deps.orderId ? getOrder({ data: { id: deps.orderId, sessionId: deps.sessionId } }) : null,
+    deps.orderId
+      ? getOrder({ data: { id: deps.orderId, token: deps.token, sessionId: deps.sessionId } })
+      : null,
   component: SuccessPage,
 });
 
@@ -23,7 +32,25 @@ function SuccessPage() {
   const navigate = useNavigate();
   const [seconds, setSeconds] = useState(6);
   const { data: session } = authClient.useSession();
-  const rootData = useLoaderData({ from: "__root__" }) as { adminEmails?: string[] };
+  const checkAdmin = useServerFn(isCurrentUserAdmin);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    if (!session?.user) {
+      return;
+    }
+    let cancelled = false;
+    checkAdmin()
+      .then((result) => {
+        if (!cancelled) {
+          setIsAdmin(Boolean(result));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.user?.id, checkAdmin]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -31,9 +58,6 @@ function SuccessPage() {
     }, 1000);
     return () => clearInterval(timer);
   }, []);
-
-  const isAdmin =
-    session?.user?.email && rootData?.adminEmails?.includes(session.user.email.toLowerCase());
 
   useEffect(() => {
     if (seconds <= 0) {
