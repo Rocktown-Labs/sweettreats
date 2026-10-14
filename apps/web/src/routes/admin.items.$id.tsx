@@ -236,6 +236,11 @@ function AdminItemDetailPage() {
                 min="0"
                 defaultValue={item?.inventoryQuantity ?? 0}
               />
+              {packSizeValue > 0 ? (
+                <small className="field-hint">
+                  Packs with contents ignore this number — stock comes from the cookies inside.
+                </small>
+              ) : null}
             </label>
             <label className="field">
               <span>Sort order</span>

@@ -48,6 +48,7 @@ export async function releaseInventoryForOrder(orderId: string): Promise<number>
       menuItemId: orderItems.menuItemId,
       quantity: orderItems.quantity,
       trackInventory: menuItems.trackInventory,
+      packSize: menuItems.packSize,
       reservationSnapshot: orderItems.reservationSnapshot,
     })
     .from(orderItems)
@@ -73,9 +74,11 @@ export async function releaseInventoryForOrder(orderId: string): Promise<number>
       addUnits(snapshot);
       continue;
     }
-    // Legacy rows (and untracked pack lines): release the row itself when the
-    // item tracks inventory.
-    if (row.menuItemId && row.trackInventory) {
+    // Legacy rows and non-pack items: release the row itself when the item
+    // tracks inventory. Pack rows with a null snapshot reserved nothing
+    // (content packs draw from their cookies, untracked packs don't count),
+    // so releasing them would add phantom stock.
+    if (row.menuItemId && row.trackInventory && !row.packSize) {
       addUnits([{ menuItemId: row.menuItemId, quantity: row.quantity }]);
     }
   }

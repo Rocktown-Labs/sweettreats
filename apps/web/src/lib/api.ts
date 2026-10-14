@@ -22,6 +22,7 @@ import { releaseReservedLines } from "./inventory";
 import { clientIpFromHeaders, rateLimit } from "./rate-limit";
 import { PICKUP_WINDOW_DAYS, addDaysIso, isPickupSlotBookable, shopDateIso } from "./pickup";
 import {
+  derivePackStock,
   ensureShippingServiceGroup,
   getShippingSettings,
   loadPackContentsByPackIds,
@@ -258,19 +259,20 @@ async function nextAvailableMenu(db: ReturnType<typeof createDb>, startDate = sh
   const decorate = (menuDate: string) => {
     const base = itemRows.map((item: MenuItemRow) => {
       const daily = dailyByItemDate.get(`${item.id}:${menuDate}`);
+      const rowAvailable = daily?.availableOverride ?? item.available;
       return {
         ...item,
         todayNote: daily?.note ?? "",
-        available:
-          (daily?.availableOverride ?? item.available) &&
-          (!item.trackInventory || item.inventoryQuantity > 0),
+        rowAvailable,
+        available: rowAvailable && (!item.trackInventory || item.inventoryQuantity > 0),
         featured: daily?.featuredOverride ?? item.featured,
         dailyMenuId: daily?.id ?? null,
       };
     });
 
-    // Packs derive availability from their contents: every cookie in the box
-    // must be available for the pack to be sellable.
+    // Packs with contents derive availability from the cookies inside them:
+    // every cookie in the box must be available for the pack to be sellable.
+    // The pack row's own inventory flags never apply to content packs.
     const byId = new Map(base.map((item) => [item.id, item]));
     const derived = base.map((item) => {
       if (!item.packSize) {
@@ -284,11 +286,12 @@ async function nextAvailableMenu(db: ReturnType<typeof createDb>, startDate = sh
         const cookie = byId.get(content.cookieItemId);
         return Boolean(cookie?.available);
       });
-      return { ...item, available: item.available && contentsAvailable };
+      return { ...item, available: item.rowAvailable && contentsAvailable };
     });
 
     return derived
       .filter((item) => item.available || item.featured)
+      .map(({ rowAvailable: _rowAvailable, ...item }) => item)
       .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
   };
 
@@ -474,25 +477,25 @@ export const getMenu = createServerFn({ method: "GET" }).handler(async () => {
     db,
     items.filter((item) => item.packSize).map((item) => item.id),
   );
-  const availabilityById = new Map(
-    items.map((item) => [
-      item.id,
-      item.available && (!item.trackInventory || item.inventoryQuantity > 0),
-    ]),
-  );
 
   return items.map((item) => {
     let available = item.available && (!item.trackInventory || item.inventoryQuantity > 0);
+    let trackInventory = item.trackInventory;
+    let inventoryQuantity = item.inventoryQuantity;
     if (item.packSize) {
       const contents = contentsByPackId.get(item.id) ?? [];
-      // Empty contents (manual-weight packs) stay sellable; populated packs
-      // need every cookie inside available.
-      const contentsAvailable = contents.every((content) =>
-        Boolean(availabilityById.get(content.cookieItemId)),
-      );
-      available = available && contentsAvailable;
+      if (contents.length > 0) {
+        // Populated packs ignore the pack row's own inventory: availability
+        // and the sellable count come from the cookies inside (the row is
+        // never decremented for content packs).
+        const stock = derivePackStock(item, contents);
+        available = stock.available;
+        trackInventory = stock.trackInventory;
+        inventoryQuantity = stock.inventoryQuantity;
+      }
+      // Content-less packs keep row-based semantics.
     }
-    return publicMenuItem({ ...item, available });
+    return publicMenuItem({ ...item, available, trackInventory, inventoryQuantity });
   });
 });
 
@@ -651,8 +654,29 @@ export const getMenuItem = createServerFn({ method: "GET" })
     const item = await db.query.menuItems.findFirst({
       where: eq(menuItems.id, id),
     });
+    if (!item) {
+      return null;
+    }
+
+    // Packs project derived stock so the detail page's low-stock badge and
+    // quantity cap match what checkout will actually allow.
+    let projected = item;
+    if (item.packSize) {
+      const contents = await loadPackContentsByPackIds(db, [item.id]);
+      const rows = contents.get(item.id) ?? [];
+      if (rows.length > 0) {
+        const stock = derivePackStock(item, rows);
+        projected = {
+          ...item,
+          available: stock.available,
+          trackInventory: stock.trackInventory,
+          inventoryQuantity: stock.inventoryQuantity,
+        };
+      }
+    }
+
     // Public item page: strip internal Stripe ids, keep the rest.
-    return item ? stripStripeIds(item) : null;
+    return stripStripeIds(projected);
   });
 
 export const getAdminMenuItem = createServerFn({ method: "GET" })
@@ -728,19 +752,14 @@ export const createOrder = createServerFn({ method: "POST" })
       }
       if (item.packSize) {
         const contents = contentsByPackId.get(item.id) ?? [];
+        // Packs with contents derive stock from the cookies inside them;
+        // the pack row's own inventory flags never apply. (byId only holds
+        // cart line ids, so resolve via content.cookie.)
         if (contents.length > 0) {
-          // Packs draw from the cookies inside them.
-          return contents.every((content) => {
-            const cookie = byId.get(content.cookieItemId);
-            if (!cookie || !cookie.available) {
-              return false;
-            }
-            return (
-              !cookie.trackInventory || cookie.inventoryQuantity >= content.quantity * quantity
-            );
-          });
+          const stock = derivePackStock(item, contents);
+          return stock.available && (!stock.trackInventory || stock.inventoryQuantity >= quantity);
         }
-        // No contents: sellable if the pack row itself allows it.
+        // Content-less packs (manual weight) sell from their own row.
         return !item.trackInventory || item.inventoryQuantity >= quantity;
       }
       return !item.trackInventory || item.inventoryQuantity >= quantity;
@@ -814,13 +833,18 @@ export const createOrder = createServerFn({ method: "POST" })
         if (line.item.packSize) {
           const contents = contentsByPackId.get(line.item.id) ?? [];
           for (const content of contents) {
-            const cookie = byId.get(content.cookieItemId);
-            if (cookie?.trackInventory) {
+            // byId only holds cart line ids; the loaded content.cookie is
+            // the authoritative row for the pack's cookies.
+            if (content.cookie?.trackInventory) {
               units.set(
                 content.cookieItemId,
                 (units.get(content.cookieItemId) ?? 0) + content.quantity * line.quantity,
               );
             }
+          }
+          if (contents.length === 0 && line.item.trackInventory) {
+            // Content-less pack (manual weight): reserve the pack row itself.
+            units.set(line.item.id, line.quantity);
           }
         } else if (line.item.trackInventory) {
           units.set(line.item.id, line.quantity);

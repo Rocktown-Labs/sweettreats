@@ -168,13 +168,16 @@ export async function loadPackContentsByPackIds(
 }
 
 /**
- * Structural subset of menu item fields the weight math needs. Full drizzle
- * rows satisfy this, and unit tests can construct lightweight literals.
+ * Structural subset of menu item fields the shipping/pack math needs. Full
+ * drizzle rows satisfy this, and unit tests can construct lightweight literals.
  */
 export type ShippableItemLite = {
   id: string;
   name: string;
   isShippable: boolean;
+  available: boolean;
+  trackInventory: boolean;
+  inventoryQuantity: number;
   weightOunces: number;
   weightMaxOunces: number | null;
   packSize: number | null;
@@ -199,6 +202,52 @@ export type WeightResult = {
   /** Items that are packs with no contents and no manual weight. */
   emptyPackNames: string[];
 };
+
+/**
+ * Derived stock for a pack. Content packs ignore the pack row's own inventory
+ * entirely: availability comes from the cookies inside, and the sellable pack
+ * count is capped by the tightest tracked cookie. Content-less packs keep
+ * row-based semantics. Returns the effective (trackInventory, inventoryQuantity)
+ * pair so UI quantity caps and order-time checks share one source of truth.
+ */
+export function derivePackStock(
+  item: Pick<ShippableItemLite, "available" | "trackInventory" | "inventoryQuantity">,
+  contents: PackContentRow[],
+): { available: boolean; trackInventory: boolean; inventoryQuantity: number } {
+  if (contents.length === 0) {
+    // Content-less packs keep row-based semantics, same gate the callers
+    // apply to singles: available flag AND stock when tracked.
+    return {
+      available: item.available && (!item.trackInventory || item.inventoryQuantity > 0),
+      trackInventory: item.trackInventory,
+      inventoryQuantity: item.inventoryQuantity,
+    };
+  }
+
+  let available = item.available;
+  let maxPacks = Number.POSITIVE_INFINITY;
+  for (const content of contents) {
+    const cookie = content.cookie;
+    if (!cookie || !cookie.available) {
+      available = false;
+      continue;
+    }
+    if (cookie.trackInventory) {
+      if (cookie.inventoryQuantity < content.quantity) {
+        available = false;
+      }
+      if (content.quantity > 0) {
+        maxPacks = Math.min(maxPacks, Math.floor(cookie.inventoryQuantity / content.quantity));
+      }
+    }
+  }
+
+  return {
+    available,
+    trackInventory: Number.isFinite(maxPacks),
+    inventoryQuantity: Number.isFinite(maxPacks) ? maxPacks : item.inventoryQuantity,
+  };
+}
 
 /**
  * Compute the shipment weight for a set of cart lines, expanding packs into

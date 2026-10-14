@@ -10,7 +10,7 @@ vi.mock("./logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { computeShipmentWeight, type ShippableItemLite } from "./shipping";
+import { computeShipmentWeight, derivePackStock, type ShippableItemLite } from "./shipping";
 import { parseReservationSnapshot } from "./inventory";
 
 function item(overrides: Partial<ShippableItemLite> & { id?: string }): ShippableItemLite {
@@ -18,6 +18,9 @@ function item(overrides: Partial<ShippableItemLite> & { id?: string }): Shippabl
     id: overrides.id ?? "item-1",
     name: overrides.name ?? "Cookie",
     isShippable: overrides.isShippable ?? true,
+    available: overrides.available ?? true,
+    trackInventory: overrides.trackInventory ?? false,
+    inventoryQuantity: overrides.inventoryQuantity ?? 0,
     weightOunces: overrides.weightOunces ?? 0,
     weightMaxOunces: overrides.weightMaxOunces ?? null,
     packSize: overrides.packSize ?? null,
@@ -104,6 +107,80 @@ describe("computeShipmentWeight", () => {
       new Map(),
     );
     expect(result.totalOunces).toBe(24); // 20 manual + 4 tare
+  });
+});
+
+describe("derivePackStock", () => {
+  const packRow = item({
+    id: "pack",
+    name: "6-pack",
+    packSize: 6,
+    trackInventory: true,
+    inventoryQuantity: 0,
+  });
+
+  it("content packs ignore the pack row's own inventory entirely", () => {
+    const choc = item({ id: "choc", name: "Choc", trackInventory: true, inventoryQuantity: 10 });
+    const straw = item({ id: "straw", name: "Straw", trackInventory: false, inventoryQuantity: 0 });
+    const contents = [
+      { cookieItemId: "choc", quantity: 3, cookie: choc },
+      { cookieItemId: "straw", quantity: 3, cookie: straw },
+    ];
+    // Row says sold out (qty 0 + tracked); contents say 10 choc / untracked straw.
+    const stock = derivePackStock(packRow, contents);
+    expect(stock.available).toBe(true);
+    expect(stock.trackInventory).toBe(true);
+    expect(stock.inventoryQuantity).toBe(3); // floor(10 / 3)
+  });
+
+  it("caps the pack count by the tightest tracked cookie", () => {
+    const choc = item({ id: "choc", name: "Choc", trackInventory: true, inventoryQuantity: 12 });
+    const straw = item({ id: "straw", name: "Straw", trackInventory: true, inventoryQuantity: 4 });
+    const contents = [
+      { cookieItemId: "choc", quantity: 3, cookie: choc },
+      { cookieItemId: "straw", quantity: 2, cookie: straw },
+    ];
+    const stock = derivePackStock(packRow, contents);
+    expect(stock.available).toBe(true);
+    expect(stock.inventoryQuantity).toBe(2); // straw: floor(4/2)
+  });
+
+  it("marks packs unavailable when any tracked cookie is short", () => {
+    const choc = item({ id: "choc", name: "Choc", trackInventory: true, inventoryQuantity: 2 });
+    const contents = [{ cookieItemId: "choc", quantity: 3, cookie: choc }];
+    const stock = derivePackStock(packRow, contents);
+    expect(stock.available).toBe(false);
+    expect(stock.inventoryQuantity).toBe(0);
+  });
+
+  it("marks packs unavailable when a content cookie row is missing", () => {
+    const contents = [{ cookieItemId: "ghost", quantity: 3, cookie: null }];
+    const stock = derivePackStock(packRow, contents);
+    expect(stock.available).toBe(false);
+  });
+
+  it("fully untracked contents leave the pack uncapped", () => {
+    const choc = item({ id: "choc", name: "Choc", trackInventory: false });
+    const contents = [{ cookieItemId: "choc", quantity: 3, cookie: choc }];
+    const stock = derivePackStock(packRow, contents);
+    expect(stock.available).toBe(true);
+    expect(stock.trackInventory).toBe(false);
+  });
+
+  it("content-less packs keep row-based semantics", () => {
+    const stock = derivePackStock(packRow, []);
+    expect(stock.available).toBe(false); // row: tracked, qty 0
+    expect(stock.trackInventory).toBe(true);
+    expect(stock.inventoryQuantity).toBe(0);
+
+    const manualPack = item({
+      id: "manual",
+      packSize: 6,
+      trackInventory: true,
+      inventoryQuantity: 5,
+    });
+    expect(derivePackStock(manualPack, []).available).toBe(true);
+    expect(derivePackStock(manualPack, []).inventoryQuantity).toBe(5);
   });
 });
 
