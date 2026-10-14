@@ -78,6 +78,7 @@ type FieldName =
   | "shipName"
   | "shipLine1"
   | "shipCity"
+  | "shipState"
   | "shipZip"
   | "shippingRate";
 type FieldErrors = Partial<Record<FieldName, string>>;
@@ -220,6 +221,7 @@ function CheckoutPage() {
       if (shipName.trim().length < 2) errors.shipName = "Enter the recipient's name.";
       if (shipLine1.trim().length < 3) errors.shipLine1 = "Enter a street address.";
       if (shipCity.trim().length < 2) errors.shipCity = "Enter a city.";
+      if (shipState.trim().length !== 2) errors.shipState = "Enter a 2-letter state.";
       if (!/^\d{5}(-\d{4})?$/.test(shipZip.trim())) errors.shipZip = "Enter a valid ZIP code.";
       if (!selectedRate) errors.shippingRate = "Choose a shipping speed.";
     }
@@ -631,14 +633,21 @@ function CheckoutPage() {
                 <label className="field">
                   <span>State</span>
                   <input
+                    id="checkout-shipState"
                     value={shipState}
                     maxLength={2}
                     autoComplete="shipping address-level1"
                     onChange={(event) => {
                       setShipState(event.target.value.toUpperCase());
                       setRateOptions([]);
+                      clearFieldError("shipState");
                     }}
+                    aria-invalid={fieldErrors.shipState ? true : undefined}
+                    aria-describedby={
+                      fieldErrors.shipState ? "checkout-shipState-error" : undefined
+                    }
                   />
+                  <FieldError id="checkout-shipState-error" message={fieldErrors.shipState} />
                 </label>
                 <label className="field">
                   <span>ZIP code</span>

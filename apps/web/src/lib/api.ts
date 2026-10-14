@@ -270,10 +270,12 @@ async function nextAvailableMenu(db: ReturnType<typeof createDb>, startDate = sh
       };
     });
 
-    // Packs with contents derive availability from the cookies inside them:
-    // every cookie in the box must be available for the pack to be sellable.
-    // The pack row's own inventory flags never apply to content packs.
-    const byId = new Map(base.map((item) => [item.id, item]));
+    // Packs with contents derive their entire stock projection (availability
+    // AND the sellable count) from the cookies inside them via derivePackStock
+    // — the same helper getMenu and order-time checks use, so the homepage
+    // card, menu page, and checkout all agree. The pack row's own inventory
+    // flags never apply to content packs. Daily menu overrides on a cookie
+    // (e.g. "sold out today only") propagate into the pack for this date.
     const derived = base.map((item) => {
       if (!item.packSize) {
         return item;
@@ -282,11 +284,27 @@ async function nextAvailableMenu(db: ReturnType<typeof createDb>, startDate = sh
       if (contents.length === 0) {
         return item;
       }
-      const contentsAvailable = contents.every((content) => {
-        const cookie = byId.get(content.cookieItemId);
-        return Boolean(cookie?.available);
+      const dateAwareContents = contents.map((content) => {
+        if (!content.cookie) {
+          return content;
+        }
+        // availableOverride is null when there's no override for the date,
+        // in which case the cookie's own flag stands.
+        const override = dailyByItemDate.get(
+          `${content.cookieItemId}:${menuDate}`,
+        )?.availableOverride;
+        return {
+          ...content,
+          cookie: { ...content.cookie, available: override ?? content.cookie.available },
+        };
       });
-      return { ...item, available: item.rowAvailable && contentsAvailable };
+      const stock = derivePackStock({ ...item, available: item.rowAvailable }, dateAwareContents);
+      return {
+        ...item,
+        available: stock.available,
+        trackInventory: stock.trackInventory,
+        inventoryQuantity: stock.inventoryQuantity,
+      };
     });
 
     return derived
@@ -746,6 +764,16 @@ export const createOrder = createServerFn({ method: "POST" })
     // Packs derive availability from their contents.
     const packIds = foundItems.filter((item) => item.packSize).map((item) => item.id);
     const contentsByPackId = await loadPackContentsByPackIds(db, packIds);
+    // Content cookies aren't cart lines; keep their names reachable for
+    // accurate sold-out errors during reservation.
+    const nameByContentId = new Map<string, string>();
+    for (const contents of contentsByPackId.values()) {
+      for (const content of contents) {
+        if (content.cookie) {
+          nameByContentId.set(content.cookieItemId, content.cookie.name);
+        }
+      }
+    }
     const isLineSellable = (item: (typeof foundItems)[number], quantity: number) => {
       if (!item.available) {
         return false;
@@ -873,8 +901,11 @@ export const createOrder = createServerFn({ method: "POST" })
             .returning({ id: menuItems.id });
 
           if (reserved.length === 0) {
-            const soldOut = byId.get(itemId)?.name ?? "An item";
-            throw new Error(`${soldOut} just sold out or does not have enough left.`);
+            // Content cookies aren't cart lines, so look names up in the
+            // contents map too — a pack's cookie selling out mid-order should
+            // say which one, not "An item".
+            const soldOutName = byId.get(itemId)?.name ?? nameByContentId.get(itemId) ?? "An item";
+            throw new Error(`${soldOutName} just sold out or does not have enough left.`);
           }
 
           reservationUnits.set(itemId, (reservationUnits.get(itemId) ?? 0) + quantity);

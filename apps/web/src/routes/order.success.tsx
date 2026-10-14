@@ -118,7 +118,7 @@ function SuccessPage() {
                 {order.shippingName} · {order.shippingLine1}
                 {order.shippingLine2 ? `, ${order.shippingLine2}` : ""}
               </p>
-              {order.shippingCents > 0 ? (
+              {order.shippingCents + order.handlingCents > 0 ? (
                 <p style={{ margin: "4px 0 0 22px", fontSize: "0.82rem", color: "#6e4422" }}>
                   Shipping &amp; handling: {formatMoney(order.shippingCents + order.handlingCents)}
                 </p>

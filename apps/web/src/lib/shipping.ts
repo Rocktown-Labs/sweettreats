@@ -546,8 +546,19 @@ export async function ensureShippingServiceGroup(): Promise<{
 
   try {
     const existing = await shippo.serviceGroups.list({});
-    if (Array.isArray(existing) && existing.length > 0) {
-      return { ok: true, existed: true, message: "A service group already exists in Shippo." };
+    // Only a LIVE_RATE group powers /live-rates; an existing FLAT_RATE or
+    // FREE_SHIPPING group isn't sufficient, so check the type specifically.
+    const groups = Array.isArray(existing) ? existing : [];
+    const hasLiveRateGroup = groups.some((group) => {
+      const groupType = (group as { type?: unknown }).type;
+      return String(groupType).toUpperCase() === "LIVE_RATE";
+    });
+    if (hasLiveRateGroup) {
+      return {
+        ok: true,
+        existed: true,
+        message: "A live-rate service group already exists in Shippo.",
+      };
     }
 
     await shippo.serviceGroups.create({
@@ -564,7 +575,7 @@ export async function ensureShippingServiceGroup(): Promise<{
     return {
       ok: true,
       existed: false,
-      message: "Created a 'Standard Shipping' service group with USPS services.",
+      message: "Created a 'Standard Shipping' live-rate service group with USPS services.",
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
