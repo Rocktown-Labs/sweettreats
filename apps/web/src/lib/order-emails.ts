@@ -72,6 +72,16 @@ export async function sendOrderNotifications(orderId: string) {
       lineTotalCents: item.lineTotalCents,
     }));
 
+    const isShipping = order.fulfillmentType === "shipping";
+    const shippingAddressText = [
+      `${order.shippingName}`,
+      order.shippingLine1,
+      order.shippingLine2,
+      `${order.shippingCity}, ${order.shippingState} ${order.shippingZip}`,
+    ]
+      .filter((part) => part && part.trim().length > 0)
+      .join("\n");
+
     // 1. Send shop notification (location contact, or admins)
     const adminResult = await sendAdminOrderEmail(
       {
@@ -80,11 +90,22 @@ export async function sendOrderNotifications(orderId: string) {
         customerName: order.customerName,
         customerEmail: order.customerEmail,
         customerPhone: order.customerPhone,
-        pickupLocationName:
-          order.pickupLocationName || order.pickupLocation?.name || "Little Rock Pickup (LR)",
-        pickupLocationAddress: order.pickupLocation?.address || "",
-        pickupDate: order.pickupDate,
-        pickupTime: order.pickupTime,
+        ...(isShipping
+          ? {
+              shippingAddress: shippingAddressText,
+              shippingServiceName: order.shippingServiceName,
+              shippingTotalCents: order.shippingCents + order.handlingCents,
+              pickupLocationName: "Shipped",
+              pickupDate: "",
+              pickupTime: "",
+            }
+          : {
+              pickupLocationName:
+                order.pickupLocationName || order.pickupLocation?.name || "Little Rock Pickup (LR)",
+              pickupLocationAddress: order.pickupLocation?.address || "",
+              pickupDate: order.pickupDate,
+              pickupTime: order.pickupTime,
+            }),
         notes: order.notes,
         subtotalCents: order.subtotalCents,
         paymentStatus: order.paymentStatus === "paid" ? "paid" : "confirmed",
@@ -109,12 +130,24 @@ export async function sendOrderNotifications(orderId: string) {
           orderNumber: order.orderNumber,
           orderId: order.id,
           customerName: order.customerName,
-          pickupLocationName:
-            order.pickupLocationName || order.pickupLocation?.name || "Little Rock Pickup (LR)",
-          pickupLocationAddress: order.pickupLocation?.address || "",
-          pickupLocationInstructions: order.pickupLocation?.instructions || "",
-          pickupDate: order.pickupDate,
-          pickupTime: order.pickupTime,
+          ...(isShipping
+            ? {
+                shippingAddress: shippingAddressText,
+                shippingServiceName: order.shippingServiceName,
+                pickupLocationName: "Shipped",
+                pickupDate: "",
+                pickupTime: "",
+              }
+            : {
+                pickupLocationName:
+                  order.pickupLocationName ||
+                  order.pickupLocation?.name ||
+                  "Little Rock Pickup (LR)",
+                pickupLocationAddress: order.pickupLocation?.address || "",
+                pickupLocationInstructions: order.pickupLocation?.instructions || "",
+                pickupDate: order.pickupDate,
+                pickupTime: order.pickupTime,
+              }),
           subtotalCents: order.subtotalCents,
           items: itemsProps.map((i) => ({
             name: i.name,

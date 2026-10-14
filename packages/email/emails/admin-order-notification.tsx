@@ -32,6 +32,10 @@ export interface AdminOrderNotificationEmailProps {
   pickupLocationAddress?: string;
   pickupDate: string;
   pickupTime: string;
+  /** When set, the email shows a shipping block instead of pickup details. */
+  shippingAddress?: string;
+  shippingServiceName?: string;
+  shippingTotalCents?: number;
   notes?: string | null;
   subtotalCents: number;
   paymentStatus: "paid" | "confirmed" | "pending";
@@ -53,6 +57,9 @@ export default function AdminOrderNotificationEmail({
   pickupLocationAddress = "400 President Clinton Ave, Little Rock, AR 72201",
   pickupDate = "2026-10-15",
   pickupTime = "2:30 PM",
+  shippingAddress,
+  shippingServiceName,
+  shippingTotalCents,
   notes = "Please pack in separate boxes if possible!",
   subtotalCents = 2450,
   paymentStatus = "paid",
@@ -166,18 +173,32 @@ export default function AdminOrderNotificationEmail({
 
             <Hr style={divider} />
 
-            {/* Pickup Location & Time */}
+            {/* Fulfillment: shipping or pickup */}
             <Heading as="h2" style={sectionTitle}>
-              Pickup Information
+              {shippingAddress ? "Shipping Information" : "Pickup Information"}
             </Heading>
             <Section style={pickupBox}>
-              <Text style={pickupSpotName}>{pickupLocationName}</Text>
-              {pickupLocationAddress ? (
-                <Text style={pickupSpotAddress}>{pickupLocationAddress}</Text>
-              ) : null}
-              <Text style={pickupTimeHighlight}>
-                Date: <strong>{pickupDate}</strong> • Time: <strong>{pickupTime}</strong>
-              </Text>
+              {shippingAddress ? (
+                <>
+                  <Text style={pickupSpotName}>
+                    {shippingServiceName || "USPS"}
+                    {shippingTotalCents != null && shippingTotalCents > 0
+                      ? ` — ${formatMoney(shippingTotalCents)}`
+                      : ""}
+                  </Text>
+                  <Text style={pickupSpotAddress}>{shippingAddress}</Text>
+                </>
+              ) : (
+                <>
+                  <Text style={pickupSpotName}>{pickupLocationName}</Text>
+                  {pickupLocationAddress ? (
+                    <Text style={pickupSpotAddress}>{pickupLocationAddress}</Text>
+                  ) : null}
+                  <Text style={pickupTimeHighlight}>
+                    Date: <strong>{pickupDate}</strong> • Time: <strong>{pickupTime}</strong>
+                  </Text>
+                </>
+              )}
             </Section>
 
             {notes ? (

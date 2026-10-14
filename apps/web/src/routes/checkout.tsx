@@ -1,16 +1,16 @@
 import { Link, useNavigate, createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { useCart } from "../lib/cart";
-import { createOrder, getPickupAvailability } from "../lib/api";
+import { createOrder, getPickupAvailability, getShippingOptions } from "../lib/api";
 import { formatMoney } from "../lib/format";
 import { authClient } from "../lib/auth-client";
 import { PICKUP_WINDOW_DAYS, addDaysIso, pickupSlots } from "../lib/pickup";
 import { DatePicker } from "../components/date-picker";
 import { TimePicker } from "../components/time-picker";
 import { LocationPicker } from "../components/location-picker";
-import { MapPin } from "lucide-react";
+import { MapPin, Package, Truck } from "lucide-react";
 
 export const Route = createFileRoute("/checkout")({
   loader: () => getPickupAvailability(),
@@ -68,7 +68,19 @@ function CheckoutPending() {
 const PHONE_PATTERN = /^\+?[0-9()\-\s]{7,20}$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-type FieldName = "name" | "email" | "phone" | "pickupLocationId" | "pickupDate" | "pickupTime";
+type FieldName =
+  | "name"
+  | "email"
+  | "phone"
+  | "pickupLocationId"
+  | "pickupDate"
+  | "pickupTime"
+  | "shipName"
+  | "shipLine1"
+  | "shipCity"
+  | "shipState"
+  | "shipZip"
+  | "shippingRate";
 type FieldErrors = Partial<Record<FieldName, string>>;
 
 function FieldError({ id, message }: { id: string; message?: string }) {
@@ -86,6 +98,7 @@ function CheckoutPage() {
   const navigate = useNavigate();
   const { data: session } = authClient.useSession();
   const submitOrder = useServerFn(createOrder);
+  const fetchShippingOptions = useServerFn(getShippingOptions);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [isSubmitting, setSubmitting] = useState(false);
@@ -93,7 +106,33 @@ function CheckoutPage() {
   const [pickupDate, setPickupDate] = useState(pickup.pickupDate);
   const [pickupTime, setPickupTime] = useState("");
 
+  // Shipping state
+  const [method, setMethod] = useState<"pickup" | "shipping">("pickup");
+  const [shipName, setShipName] = useState("");
+  const [shipLine1, setShipLine1] = useState("");
+  const [shipLine2, setShipLine2] = useState("");
+  const [shipCity, setShipCity] = useState("");
+  const [shipState, setShipState] = useState("AR");
+  const [shipZip, setShipZip] = useState("");
+  const [rateOptions, setRateOptions] = useState<
+    { title: string; amountCents: number; estimatedDays: number | null }[]
+  >([]);
+  const [handlingFeeCents, setHandlingFeeCents] = useState(0);
+  const [selectedRate, setSelectedRate] = useState("");
+  const [isQuoting, setQuoting] = useState(false);
+  const [quoteError, setQuoteError] = useState("");
+
   const selectedLocation = locations.find((l) => l.id === pickupLocationId);
+  const cartHasUnshippable = cart.lines.some((line) => line.isShippable === false);
+  const selectedRateOption = rateOptions.find((option) => option.title === selectedRate) ?? null;
+  const shippingTotalCents =
+    selectedRateOption != null ? selectedRateOption.amountCents + handlingFeeCents : 0;
+
+  useEffect(() => {
+    if (method === "shipping" && session?.user?.name && !shipName) {
+      setShipName(session.user.name);
+    }
+  }, [method, session?.user?.name, shipName]);
 
   // Slots depend on "now" in the shop's time zone, so compute them on the client after mount-time
   // renders and whenever the date changes.
@@ -117,6 +156,57 @@ function CheckoutPage() {
     }
   };
 
+  const loadRates = async () => {
+    setQuoteError("");
+    if (
+      shipName.trim().length < 2 ||
+      shipLine1.trim().length < 3 ||
+      shipCity.trim().length < 2 ||
+      !/^\d{5}(-\d{4})?$/.test(shipZip.trim())
+    ) {
+      setQuoteError("Enter the full delivery address first.");
+      return;
+    }
+    setQuoting(true);
+    try {
+      const result = await fetchShippingOptions({
+        data: {
+          items: cart.lines.map((line) => ({ id: line.id, quantity: line.quantity })),
+          address: {
+            name: shipName.trim(),
+            line1: shipLine1.trim(),
+            line2: shipLine2.trim(),
+            city: shipCity.trim(),
+            state: shipState.trim().toUpperCase(),
+            zip: shipZip.trim(),
+          },
+        },
+      });
+      if (!result.configured) {
+        setQuoteError("Shipping isn't available right now. Choose pickup instead.");
+        return;
+      }
+      setHandlingFeeCents(result.handlingFeeCents);
+      setRateOptions(result.options);
+      setSelectedRate(result.options[0]?.title ?? "");
+      if (result.options.length === 0) {
+        setQuoteError("No shipping services are available for that address yet.");
+      }
+    } catch (caught) {
+      setQuoteError(caught instanceof Error ? caught.message : "Could not fetch shipping rates.");
+    } finally {
+      setQuoting(false);
+    }
+  };
+
+  // Editing any address field invalidates the quoted rates: clear both the
+  // options AND the selection so a stale serviceTitle can never be submitted
+  // against a different address than the one that was quoted.
+  const resetRates = () => {
+    setRateOptions([]);
+    setSelectedRate("");
+  };
+
   const validate = (form: FormData): FieldErrors => {
     const errors: FieldErrors = {};
     const name = String(form.get("name") ?? "").trim();
@@ -126,12 +216,22 @@ function CheckoutPage() {
     if (name.length < 2) errors.name = "Enter your name so we know who to hand the order to.";
     if (!EMAIL_PATTERN.test(email)) errors.email = "Enter a valid email address.";
     if (!PHONE_PATTERN.test(phone)) errors.phone = "Enter a phone number we can reach you at.";
-    if (!pickupLocationId) errors.pickupLocationId = "Choose a pickup location.";
-    if (!pickupDate) errors.pickupDate = "Choose a pickup date.";
-    if (!pickupTime) {
-      errors.pickupTime = "Choose a pickup time.";
-    } else if (!slots.some((slot) => slot.value === pickupTime && !slot.disabled)) {
-      errors.pickupTime = "That time has passed. Pick a later slot.";
+
+    if (method === "pickup") {
+      if (!pickupLocationId) errors.pickupLocationId = "Choose a pickup location.";
+      if (!pickupDate) errors.pickupDate = "Choose a pickup date.";
+      if (!pickupTime) {
+        errors.pickupTime = "Choose a pickup time.";
+      } else if (!slots.some((slot) => slot.value === pickupTime && !slot.disabled)) {
+        errors.pickupTime = "That time has passed. Pick a later slot.";
+      }
+    } else {
+      if (shipName.trim().length < 2) errors.shipName = "Enter the recipient's name.";
+      if (shipLine1.trim().length < 3) errors.shipLine1 = "Enter a street address.";
+      if (shipCity.trim().length < 2) errors.shipCity = "Enter a city.";
+      if (shipState.trim().length !== 2) errors.shipState = "Enter a 2-letter state.";
+      if (!/^\d{5}(-\d{4})?$/.test(shipZip.trim())) errors.shipZip = "Enter a valid ZIP code.";
+      if (!selectedRate) errors.shippingRate = "Choose a shipping speed.";
     }
 
     return errors;
@@ -205,11 +305,27 @@ function CheckoutPage() {
                 name: String(form.get("name") ?? "").trim(),
                 email: String(form.get("email") ?? "").trim(),
                 phone: String(form.get("phone") ?? "").trim(),
-                pickupLocationId,
-                pickupDate,
-                pickupTime,
                 notes: String(form.get("notes") ?? ""),
                 items: cart.lines.map((line) => ({ id: line.id, quantity: line.quantity })),
+                ...(method === "pickup"
+                  ? {
+                      pickupLocationId,
+                      pickupDate,
+                      pickupTime,
+                    }
+                  : {
+                      shipping: {
+                        address: {
+                          name: shipName.trim(),
+                          line1: shipLine1.trim(),
+                          line2: shipLine2.trim(),
+                          city: shipCity.trim(),
+                          state: shipState.trim().toUpperCase(),
+                          zip: shipZip.trim(),
+                        },
+                        serviceTitle: selectedRate,
+                      },
+                    }),
               },
             });
             cart.clear();
@@ -316,108 +432,343 @@ function CheckoutPage() {
           </fieldset>
 
           <fieldset className="form-section">
-            <legend>Pickup</legend>
+            <legend>Delivery</legend>
             <div className="field-grid">
               <div className="field field-wide">
-                <label htmlFor="checkout-pickupLocationId" className="field-label is-required">
-                  Pickup spot
-                </label>
-                <LocationPicker
-                  id="checkout-pickupLocationId"
-                  value={pickupLocationId}
-                  onChange={(next) => {
-                    setPickupLocationId(next);
-                    clearFieldError("pickupLocationId");
-                  }}
-                  locations={locations}
-                  invalid={Boolean(fieldErrors.pickupLocationId)}
-                  describedBy={
-                    fieldErrors.pickupLocationId ? "checkout-pickupLocationId-error" : undefined
-                  }
-                />
-                <FieldError
-                  id="checkout-pickupLocationId-error"
-                  message={fieldErrors.pickupLocationId}
-                />
-                {selectedLocation ? (
-                  <div
-                    className="location-callout"
-                    role="region"
-                    aria-label="Selected pickup spot details"
+                <span className="field-label is-required">How should we get this to you?</span>
+                <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => setMethod("pickup")}
+                    aria-pressed={method === "pickup"}
+                    style={methodToggleStyle(method === "pickup")}
                   >
-                    <div className="location-callout-header">
-                      <MapPin size={15} aria-hidden="true" className="location-callout-icon" />
-                      <span className="location-callout-name">{selectedLocation.name}</span>
-                      {selectedLocation.phone ? (
-                        <span className="location-callout-phone">· {selectedLocation.phone}</span>
-                      ) : null}
-                    </div>
-                    <p className="location-callout-address">{selectedLocation.address}</p>
-                    {selectedLocation.instructions ? (
-                      <p className="location-callout-instructions">
-                        <strong>Pickup notes:</strong> {selectedLocation.instructions}
-                      </p>
-                    ) : null}
-                  </div>
+                    <MapPin size={15} aria-hidden="true" style={{ marginRight: "6px" }} />
+                    Pickup
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMethod("shipping")}
+                    disabled={cartHasUnshippable}
+                    aria-pressed={method === "shipping"}
+                    style={methodToggleStyle(method === "shipping")}
+                  >
+                    <Truck size={15} aria-hidden="true" style={{ marginRight: "6px" }} />
+                    Ship it
+                  </button>
+                </div>
+                {cartHasUnshippable ? (
+                  <small className="field-hint">
+                    Some items in your cart are pickup-only, so shipping isn&apos;t available for
+                    this order.
+                  </small>
                 ) : null}
               </div>
-              <div className="field">
-                <label htmlFor="checkout-pickupDate" className="field-label is-required">
-                  Date
-                </label>
-                <DatePicker
-                  id="checkout-pickupDate"
-                  value={pickupDate}
-                  onChange={changeDate}
-                  min={minDate}
-                  max={maxDate}
-                  invalid={Boolean(fieldErrors.pickupDate)}
-                  describedBy={fieldErrors.pickupDate ? "checkout-pickupDate-error" : undefined}
-                />
-                <FieldError id="checkout-pickupDate-error" message={fieldErrors.pickupDate} />
-              </div>
-              <div className="field">
-                <label htmlFor="checkout-pickupTime" className="field-label is-required">
-                  Time
-                </label>
-                <TimePicker
-                  id="checkout-pickupTime"
-                  value={pickupTime}
-                  onChange={(next) => {
-                    setPickupTime(next);
-                    clearFieldError("pickupTime");
-                  }}
-                  slots={slots}
-                  invalid={Boolean(fieldErrors.pickupTime)}
-                  describedBy={
-                    fieldErrors.pickupTime
-                      ? "checkout-pickupTime-error"
-                      : "checkout-pickupTime-hint"
-                  }
-                />
-                {fieldErrors.pickupTime ? (
-                  <FieldError id="checkout-pickupTime-error" message={fieldErrors.pickupTime} />
-                ) : (
-                  <small id="checkout-pickupTime-hint" className="field-hint">
-                    {noSlotsLeft
-                      ? "No more pickup times today. Choose another date."
-                      : "Open 11 AM to 11 PM. Same-day orders need 30 minutes."}
-                  </small>
-                )}
-              </div>
-              <label className="field field-wide">
-                <span className="optional-label">
-                  Notes <em>(optional)</em>
-                </span>
-                <textarea
-                  name="notes"
-                  rows={3}
-                  maxLength={500}
-                  placeholder="Allergies, a name for the pickup, anything we should know"
-                />
-              </label>
             </div>
           </fieldset>
+
+          {method === "pickup" ? (
+            <fieldset className="form-section">
+              <legend>Pickup</legend>
+              <div className="field-grid">
+                <div className="field field-wide">
+                  <label htmlFor="checkout-pickupLocationId" className="field-label is-required">
+                    Pickup spot
+                  </label>
+                  <LocationPicker
+                    id="checkout-pickupLocationId"
+                    value={pickupLocationId}
+                    onChange={(next) => {
+                      setPickupLocationId(next);
+                      clearFieldError("pickupLocationId");
+                    }}
+                    locations={locations}
+                    invalid={Boolean(fieldErrors.pickupLocationId)}
+                    describedBy={
+                      fieldErrors.pickupLocationId ? "checkout-pickupLocationId-error" : undefined
+                    }
+                  />
+                  <FieldError
+                    id="checkout-pickupLocationId-error"
+                    message={fieldErrors.pickupLocationId}
+                  />
+                  {selectedLocation ? (
+                    <div
+                      className="location-callout"
+                      role="region"
+                      aria-label="Selected pickup spot details"
+                    >
+                      <div className="location-callout-header">
+                        <MapPin size={15} aria-hidden="true" className="location-callout-icon" />
+                        <span className="location-callout-name">{selectedLocation.name}</span>
+                        {selectedLocation.phone ? (
+                          <span className="location-callout-phone">· {selectedLocation.phone}</span>
+                        ) : null}
+                      </div>
+                      <p className="location-callout-address">{selectedLocation.address}</p>
+                      {selectedLocation.instructions ? (
+                        <p className="location-callout-instructions">
+                          <strong>Pickup notes:</strong> {selectedLocation.instructions}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="field">
+                  <label htmlFor="checkout-pickupDate" className="field-label is-required">
+                    Date
+                  </label>
+                  <DatePicker
+                    id="checkout-pickupDate"
+                    value={pickupDate}
+                    onChange={changeDate}
+                    min={minDate}
+                    max={maxDate}
+                    invalid={Boolean(fieldErrors.pickupDate)}
+                    describedBy={fieldErrors.pickupDate ? "checkout-pickupDate-error" : undefined}
+                  />
+                  <FieldError id="checkout-pickupDate-error" message={fieldErrors.pickupDate} />
+                </div>
+                <div className="field">
+                  <label htmlFor="checkout-pickupTime" className="field-label is-required">
+                    Time
+                  </label>
+                  <TimePicker
+                    id="checkout-pickupTime"
+                    value={pickupTime}
+                    onChange={(next) => {
+                      setPickupTime(next);
+                      clearFieldError("pickupTime");
+                    }}
+                    slots={slots}
+                    invalid={Boolean(fieldErrors.pickupTime)}
+                    describedBy={
+                      fieldErrors.pickupTime
+                        ? "checkout-pickupTime-error"
+                        : "checkout-pickupTime-hint"
+                    }
+                  />
+                  {fieldErrors.pickupTime ? (
+                    <FieldError id="checkout-pickupTime-error" message={fieldErrors.pickupTime} />
+                  ) : (
+                    <small id="checkout-pickupTime-hint" className="field-hint">
+                      {noSlotsLeft
+                        ? "No more pickup times today. Choose another date."
+                        : "Open 11 AM to 11 PM. Same-day orders need 30 minutes."}
+                    </small>
+                  )}
+                </div>
+                <label className="field field-wide">
+                  <span className="optional-label">
+                    Notes <em>(optional)</em>
+                  </span>
+                  <textarea
+                    name="notes"
+                    rows={3}
+                    maxLength={500}
+                    placeholder="Allergies, a name for the pickup, anything we should know"
+                  />
+                </label>
+              </div>
+            </fieldset>
+          ) : (
+            <fieldset className="form-section">
+              <legend>Shipping</legend>
+              <div className="field-grid">
+                <label className="field field-wide">
+                  <span>Recipient name</span>
+                  <input
+                    id="checkout-shipName"
+                    value={shipName}
+                    autoComplete="shipping name"
+                    onChange={(event) => {
+                      setShipName(event.target.value);
+                      resetRates();
+                      clearFieldError("shipName");
+                    }}
+                    aria-invalid={fieldErrors.shipName ? true : undefined}
+                    aria-describedby={fieldErrors.shipName ? "checkout-shipName-error" : undefined}
+                  />
+                  <FieldError id="checkout-shipName-error" message={fieldErrors.shipName} />
+                </label>
+                <label className="field field-wide">
+                  <span>Street address</span>
+                  <input
+                    id="checkout-shipLine1"
+                    value={shipLine1}
+                    autoComplete="shipping address-line1"
+                    onChange={(event) => {
+                      setShipLine1(event.target.value);
+                      resetRates();
+                      clearFieldError("shipLine1");
+                    }}
+                    aria-invalid={fieldErrors.shipLine1 ? true : undefined}
+                    aria-describedby={
+                      fieldErrors.shipLine1 ? "checkout-shipLine1-error" : undefined
+                    }
+                  />
+                  <FieldError id="checkout-shipLine1-error" message={fieldErrors.shipLine1} />
+                </label>
+                <label className="field field-wide">
+                  <span className="optional-label">
+                    Apartment / suite <em>(optional)</em>
+                  </span>
+                  <input
+                    value={shipLine2}
+                    autoComplete="shipping address-line2"
+                    onChange={(event) => {
+                      setShipLine2(event.target.value);
+                      resetRates();
+                    }}
+                  />
+                </label>
+                <label className="field">
+                  <span>City</span>
+                  <input
+                    id="checkout-shipCity"
+                    value={shipCity}
+                    autoComplete="shipping address-level2"
+                    onChange={(event) => {
+                      setShipCity(event.target.value);
+                      resetRates();
+                      clearFieldError("shipCity");
+                    }}
+                    aria-invalid={fieldErrors.shipCity ? true : undefined}
+                    aria-describedby={fieldErrors.shipCity ? "checkout-shipCity-error" : undefined}
+                  />
+                  <FieldError id="checkout-shipCity-error" message={fieldErrors.shipCity} />
+                </label>
+                <label className="field">
+                  <span>State</span>
+                  <input
+                    id="checkout-shipState"
+                    value={shipState}
+                    maxLength={2}
+                    autoComplete="shipping address-level1"
+                    onChange={(event) => {
+                      setShipState(event.target.value.toUpperCase());
+                      resetRates();
+                      clearFieldError("shipState");
+                    }}
+                    aria-invalid={fieldErrors.shipState ? true : undefined}
+                    aria-describedby={
+                      fieldErrors.shipState ? "checkout-shipState-error" : undefined
+                    }
+                  />
+                  <FieldError id="checkout-shipState-error" message={fieldErrors.shipState} />
+                </label>
+                <label className="field">
+                  <span>ZIP code</span>
+                  <input
+                    id="checkout-shipZip"
+                    value={shipZip}
+                    inputMode="numeric"
+                    maxLength={10}
+                    autoComplete="shipping postal-code"
+                    onChange={(event) => {
+                      setShipZip(event.target.value);
+                      resetRates();
+                      clearFieldError("shipZip");
+                    }}
+                    aria-invalid={fieldErrors.shipZip ? true : undefined}
+                    aria-describedby={fieldErrors.shipZip ? "checkout-shipZip-error" : undefined}
+                  />
+                  <FieldError id="checkout-shipZip-error" message={fieldErrors.shipZip} />
+                </label>
+                <label className="field field-wide">
+                  <span className="optional-label">
+                    Notes <em>(optional)</em>
+                  </span>
+                  <textarea
+                    name="notes"
+                    rows={3}
+                    maxLength={500}
+                    placeholder="Allergies, gift message, anything we should know"
+                  />
+                </label>
+
+                <div className="field field-wide">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    style={{ width: "100%" }}
+                    onClick={loadRates}
+                    disabled={isQuoting}
+                  >
+                    {isQuoting
+                      ? "Getting rates..."
+                      : rateOptions.length > 0
+                        ? "Refresh rates"
+                        : "Get shipping rates"}
+                  </button>
+                  {quoteError ? (
+                    <p className="field-error" role="alert">
+                      {quoteError}
+                    </p>
+                  ) : null}
+                  {rateOptions.length > 0 ? (
+                    <div style={{ marginTop: "14px", display: "grid", gap: "8px" }}>
+                      {rateOptions.map((option) => (
+                        <label
+                          key={option.title}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "10px",
+                            padding: "10px 12px",
+                            border:
+                              selectedRate === option.title
+                                ? "2px solid #241408"
+                                : "1px solid #ead8bf",
+                            borderRadius: "10px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <input
+                            type="radio"
+                            name="shippingRate"
+                            value={option.title}
+                            checked={selectedRate === option.title}
+                            onChange={() => {
+                              setSelectedRate(option.title);
+                              clearFieldError("shippingRate");
+                            }}
+                          />
+                          <span style={{ flex: 1 }}>{option.title}</span>
+                          {option.estimatedDays != null ? (
+                            <small style={{ color: "#8c6f4a" }}>
+                              {option.estimatedDays === 1
+                                ? "1 day"
+                                : `${option.estimatedDays} days`}
+                            </small>
+                          ) : null}
+                          <strong>{formatMoney(option.amountCents)}</strong>
+                        </label>
+                      ))}
+                      {handlingFeeCents > 0 ? (
+                        <small className="field-hint">
+                          Plus {formatMoney(handlingFeeCents)} handling fee.
+                        </small>
+                      ) : null}
+                      <FieldError
+                        id="checkout-shippingRate-error"
+                        message={fieldErrors.shippingRate}
+                      />
+                    </div>
+                  ) : (
+                    <small className="field-hint" style={{ marginTop: "8px" }}>
+                      <Package
+                        size={13}
+                        aria-hidden="true"
+                        style={{ marginRight: "4px", verticalAlign: "-2px" }}
+                      />
+                      USPS Priority shipping. Enter the delivery address, then get rates.
+                    </small>
+                  )}
+                </div>
+              </div>
+            </fieldset>
+          )}
 
           {error ? (
             <p className="form-error" role="alert">
@@ -432,7 +783,19 @@ function CheckoutPage() {
               {line.quantity} x {line.name}
             </p>
           ))}
-          <h2>{formatMoney(cart.subtotalCents)}</h2>
+          {method === "shipping" && selectedRateOption ? (
+            <p>
+              {selectedRateOption.title}
+              {handlingFeeCents > 0 ? " + handling" : ""}: {formatMoney(shippingTotalCents)}
+            </p>
+          ) : null}
+          <h2>
+            {formatMoney(
+              method === "shipping" && selectedRateOption
+                ? cart.subtotalCents + shippingTotalCents
+                : cart.subtotalCents,
+            )}
+          </h2>
           <button type="submit" className="primary-button" disabled={isSubmitting}>
             {isSubmitting ? "Sending..." : "Send order"}
           </button>
@@ -440,4 +803,18 @@ function CheckoutPage() {
       </form>
     </main>
   );
+}
+
+function methodToggleStyle(active: boolean): CSSProperties {
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "10px 18px",
+    borderRadius: "999px",
+    border: active ? "2px solid #241408" : "1px solid #ead8bf",
+    background: active ? "#241408" : "transparent",
+    color: active ? "#fff8e7" : "#241408",
+    fontWeight: 600,
+    cursor: "pointer",
+  };
 }

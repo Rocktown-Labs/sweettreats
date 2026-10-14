@@ -5,6 +5,7 @@ import {
   orderItems,
   orders,
   orderStatuses,
+  packContents as packContentsTable,
   pickupLocations,
   shopDaySettings,
 } from "@sweettreats/db/schema/index";
@@ -20,6 +21,17 @@ import { createOrderToken, verifyOrderToken } from "./order-token";
 import { releaseReservedLines } from "./inventory";
 import { clientIpFromHeaders, rateLimit } from "./rate-limit";
 import { PICKUP_WINDOW_DAYS, addDaysIso, isPickupSlotBookable, shopDateIso } from "./pickup";
+import {
+  derivePackStock,
+  ensureShippingServiceGroup,
+  getShippingSettings,
+  loadPackContentsByPackIds,
+  quoteShippingRates,
+  resolveShippingOption,
+  saveShippingSettings,
+  shippoConfigured,
+  type ShippingSettings,
+} from "./shipping";
 import { logger } from "./logger";
 
 let stripeClient: Stripe | null | undefined;
@@ -45,15 +57,68 @@ const cartLineSchema = z.object({
   quantity: z.number().int().min(1).max(24),
 });
 
-const checkoutSchema = z.object({
-  name: z.string().min(2),
-  email: z.string().email(),
-  phone: z.string().regex(/^\+?[0-9()\-\s]{7,20}$/, "Enter a valid phone number."),
-  pickupLocationId: z.string().min(1, "Choose a pickup location."),
-  pickupDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Choose a valid pickup date."),
-  pickupTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Choose a valid pickup time."),
-  notes: z.string().max(500).optional().default(""),
+const shippingAddressSchema = z.object({
+  name: z.string().min(2, "Enter the recipient's name."),
+  line1: z.string().min(3, "Enter a street address."),
+  line2: z.string().max(200).optional().default(""),
+  city: z.string().min(2, "Enter a city."),
+  state: z.string().length(2, "Enter a 2-letter state."),
+  zip: z.string().regex(/^\d{5}(-\d{4})?$/, "Enter a valid ZIP code."),
+  country: z.literal("US").optional().default("US"),
+});
+
+const checkoutSchema = z
+  .object({
+    name: z.string().min(2),
+    email: z.string().email(),
+    phone: z.string().regex(/^\+?[0-9()\-\s]{7,20}$/, "Enter a valid phone number."),
+    notes: z.string().max(500).optional().default(""),
+    items: z.array(cartLineSchema).min(1).max(50),
+    // Pickup details (required when not shipping)
+    pickupLocationId: z.string().optional(),
+    pickupDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Choose a valid pickup date.")
+      .optional(),
+    pickupTime: z
+      .string()
+      .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Choose a valid pickup time.")
+      .optional(),
+    // Shipping details (required when not picking up)
+    shipping: z
+      .object({
+        address: shippingAddressSchema,
+        serviceTitle: z.string().min(2).max(120),
+      })
+      .optional(),
+  })
+  .refine(
+    (data) =>
+      Boolean(data.shipping) || (data.pickupLocationId && data.pickupDate && data.pickupTime),
+    { message: "Choose pickup or shipping." },
+  );
+
+const shippingQuoteSchema = z.object({
   items: z.array(cartLineSchema).min(1).max(50),
+  address: shippingAddressSchema,
+});
+
+const adminRatePreviewSchema = z.object({
+  items: z.array(cartLineSchema).max(50).optional(),
+  manualWeightOunces: z
+    .number()
+    .min(0.1)
+    .max(70 * 16)
+    .optional(),
+  address: z.object({
+    name: z.string().min(2),
+    line1: z.string().min(3),
+    line2: z.string().optional().default(""),
+    city: z.string().min(2),
+    state: z.string().length(2),
+    zip: z.string().regex(/^\d{5}(-\d{4})?$/),
+    country: z.literal("US").optional().default("US"),
+  }),
 });
 
 const pickupLocationSchema = z.object({
@@ -91,6 +156,35 @@ const itemSchema = z.object({
   stripeProductId: z.string().optional().nullable(),
   stripePriceId: z.string().optional().nullable(),
   sortOrder: z.number().int().default(0),
+  weightOunces: z
+    .number()
+    .min(0)
+    .max(70 * 16)
+    .default(0),
+  weightMaxOunces: z
+    .number()
+    .min(0)
+    .max(70 * 16)
+    .optional()
+    .nullable(),
+  isShippable: z.boolean().default(true),
+  /** When set, this item is a pack/box of `packSize` cookies. */
+  packSize: z.number().int().min(1).max(48).optional().nullable(),
+  packTareOunces: z
+    .number()
+    .min(0)
+    .max(70 * 16)
+    .default(0),
+  /** Fixed assortment contents: [{ cookieItemId, quantity }]. Sum should equal packSize. */
+  packContents: z
+    .array(
+      z.object({
+        cookieItemId: z.string().min(1),
+        quantity: z.number().int().min(1).max(48),
+      }),
+    )
+    .max(24)
+    .optional(),
 });
 
 const uploadSchema = z.object({
@@ -158,21 +252,66 @@ async function nextAvailableMenu(db: ReturnType<typeof createDb>, startDate = sh
     dailyByItemDate.set(`${daily.menuItemId}:${daily.menuDate}`, daily);
   }
 
-  const decorate = (menuDate: string) =>
-    itemRows
-      .map((item: MenuItemRow) => {
-        const daily = dailyByItemDate.get(`${item.id}:${menuDate}`);
+  // Pack contents for availability derivation (single extra query when packs exist).
+  const packIds = itemRows.filter((item) => item.packSize).map((item) => item.id);
+  const contentsByPackId = await loadPackContentsByPackIds(db, packIds);
+
+  const decorate = (menuDate: string) => {
+    const base = itemRows.map((item: MenuItemRow) => {
+      const daily = dailyByItemDate.get(`${item.id}:${menuDate}`);
+      const rowAvailable = daily?.availableOverride ?? item.available;
+      return {
+        ...item,
+        todayNote: daily?.note ?? "",
+        rowAvailable,
+        available: rowAvailable && (!item.trackInventory || item.inventoryQuantity > 0),
+        featured: daily?.featuredOverride ?? item.featured,
+        dailyMenuId: daily?.id ?? null,
+      };
+    });
+
+    // Packs with contents derive their entire stock projection (availability
+    // AND the sellable count) from the cookies inside them via derivePackStock
+    // — the same helper getMenu and order-time checks use, so the homepage
+    // card, menu page, and checkout all agree. The pack row's own inventory
+    // flags never apply to content packs. Daily menu overrides on a cookie
+    // (e.g. "sold out today only") propagate into the pack for this date.
+    const derived = base.map((item) => {
+      if (!item.packSize) {
+        return item;
+      }
+      const contents = contentsByPackId.get(item.id) ?? [];
+      if (contents.length === 0) {
+        return item;
+      }
+      const dateAwareContents = contents.map((content) => {
+        if (!content.cookie) {
+          return content;
+        }
+        // availableOverride is null when there's no override for the date,
+        // in which case the cookie's own flag stands.
+        const override = dailyByItemDate.get(
+          `${content.cookieItemId}:${menuDate}`,
+        )?.availableOverride;
         return {
-          ...item,
-          todayNote: daily?.note ?? "",
-          available:
-            (daily?.availableOverride ?? item.available) &&
-            (!item.trackInventory || item.inventoryQuantity > 0),
-          featured: daily?.featuredOverride ?? item.featured,
-          dailyMenuId: daily?.id ?? null,
+          ...content,
+          cookie: { ...content.cookie, available: override ?? content.cookie.available },
         };
-      })
-      .filter((item) => item.available || item.featured);
+      });
+      const stock = derivePackStock({ ...item, available: item.rowAvailable }, dateAwareContents);
+      return {
+        ...item,
+        available: stock.available,
+        trackInventory: stock.trackInventory,
+        inventoryQuantity: stock.inventoryQuantity,
+      };
+    });
+
+    return derived
+      .filter((item) => item.available || item.featured)
+      .map(({ rowAvailable: _rowAvailable, ...item }) => item)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  };
 
   for (let offset = 0; offset < limit; offset += 1) {
     const date = addDaysIso(startDate, offset);
@@ -213,6 +352,11 @@ const seedMenu = [
     stripeProductId: null,
     stripePriceId: null,
     sortOrder: 10,
+    weightOunces: 0,
+    weightMaxOunces: null,
+    packSize: null,
+    packTareOunces: 0,
+    isShippable: true,
     createdAt: "",
     updatedAt: "",
   },
@@ -234,6 +378,11 @@ const seedMenu = [
     stripeProductId: null,
     stripePriceId: null,
     sortOrder: 20,
+    weightOunces: 0,
+    weightMaxOunces: null,
+    packSize: null,
+    packTareOunces: 0,
+    isShippable: true,
     createdAt: "",
     updatedAt: "",
   },
@@ -255,6 +404,11 @@ const seedMenu = [
     stripeProductId: null,
     stripePriceId: null,
     sortOrder: 40,
+    weightOunces: 0,
+    weightMaxOunces: null,
+    packSize: null,
+    packTareOunces: 0,
+    isShippable: true,
     createdAt: "",
     updatedAt: "",
   },
@@ -335,18 +489,38 @@ export const getMenu = createServerFn({ method: "GET" }).handler(async () => {
     .select()
     .from(menuItems)
     .orderBy(asc(menuItems.sortOrder), asc(menuItems.name));
-  return items.map((item) =>
-    publicMenuItem({
-      ...item,
-      available: item.available && (!item.trackInventory || item.inventoryQuantity > 0),
-    }),
+
+  // Packs derive availability from their contents.
+  const contentsByPackId = await loadPackContentsByPackIds(
+    db,
+    items.filter((item) => item.packSize).map((item) => item.id),
   );
+
+  return items.map((item) => {
+    let available = item.available && (!item.trackInventory || item.inventoryQuantity > 0);
+    let trackInventory = item.trackInventory;
+    let inventoryQuantity = item.inventoryQuantity;
+    if (item.packSize) {
+      const contents = contentsByPackId.get(item.id) ?? [];
+      if (contents.length > 0) {
+        // Populated packs ignore the pack row's own inventory: availability
+        // and the sellable count come from the cookies inside (the row is
+        // never decremented for content packs).
+        const stock = derivePackStock(item, contents);
+        available = stock.available;
+        trackInventory = stock.trackInventory;
+        inventoryQuantity = stock.inventoryQuantity;
+      }
+      // Content-less packs keep row-based semantics.
+    }
+    return publicMenuItem({ ...item, available, trackInventory, inventoryQuantity });
+  });
 });
 
 /**
  * Public projection for the storefront: internal Stripe ids never leave the
  * server. Inventory fields stay — the low-stock badge and quantity caps
- * depend on them.
+ * depend on them. Pack/shipping flags drive the checkout UI.
  */
 function publicMenuItem(item: typeof menuItems.$inferSelect & { available?: boolean }) {
   return {
@@ -365,6 +539,8 @@ function publicMenuItem(item: typeof menuItems.$inferSelect & { available?: bool
     imageKey: item.imageKey,
     imageAlt: item.imageAlt,
     sortOrder: item.sortOrder,
+    packSize: item.packSize,
+    isShippable: item.isShippable,
   };
 }
 
@@ -496,8 +672,29 @@ export const getMenuItem = createServerFn({ method: "GET" })
     const item = await db.query.menuItems.findFirst({
       where: eq(menuItems.id, id),
     });
+    if (!item) {
+      return null;
+    }
+
+    // Packs project derived stock so the detail page's low-stock badge and
+    // quantity cap match what checkout will actually allow.
+    let projected = item;
+    if (item.packSize) {
+      const contents = await loadPackContentsByPackIds(db, [item.id]);
+      const rows = contents.get(item.id) ?? [];
+      if (rows.length > 0) {
+        const stock = derivePackStock(item, rows);
+        projected = {
+          ...item,
+          available: stock.available,
+          trackInventory: stock.trackInventory,
+          inventoryQuantity: stock.inventoryQuantity,
+        };
+      }
+    }
+
     // Public item page: strip internal Stripe ids, keep the rest.
-    return item ? stripStripeIds(item) : null;
+    return stripStripeIds(projected);
   });
 
 export const getAdminMenuItem = createServerFn({ method: "GET" })
@@ -512,9 +709,21 @@ export const getAdminMenuItem = createServerFn({ method: "GET" })
       return seedMenu.find((item) => item.id === id) ?? null;
     }
 
-    return dbRequired().query.menuItems.findFirst({
+    const item = await dbRequired().query.menuItems.findFirst({
       where: eq(menuItems.id, id),
     });
+    if (!item) {
+      return null;
+    }
+
+    const contents = await loadPackContentsByPackIds(createDb(), [item.id]);
+    return {
+      ...item,
+      packContents: (contents.get(item.id) ?? []).map((content) => ({
+        cookieItemId: content.cookieItemId,
+        quantity: content.quantity,
+      })),
+    };
   });
 
 export const createOrder = createServerFn({ method: "POST" })
@@ -531,28 +740,63 @@ export const createOrder = createServerFn({ method: "POST" })
       throw new Error("Too many orders sent from this connection. Try again in a few minutes.");
     }
 
-    // Server-side pickup validation: window bounds and a bookable slot.
-    // The client enforces the same rules, but the server must not trust it.
-    const today = shopDateIso();
-    const maxDate = addDaysIso(today, PICKUP_WINDOW_DAYS);
-    if (data.pickupDate < today || data.pickupDate > maxDate) {
-      throw new Error("Choose a pickup date within the next 30 days.");
-    }
-    if (!isPickupSlotBookable(data.pickupDate, data.pickupTime)) {
-      throw new Error("That pickup time is not available. Pick another slot.");
+    // Fulfillment branch: pickup orders validate the slot server-side; shipping
+    // orders resolve the carrier price fresh from Shippo (the browser only
+    // ever submits the service title, never an amount).
+    const isShipping = Boolean(data.shipping);
+    let pickupDate = "";
+    let pickupTime = "";
+    if (!isShipping) {
+      const today = shopDateIso();
+      const maxDate = addDaysIso(today, PICKUP_WINDOW_DAYS);
+      if (!data.pickupDate || data.pickupDate < today || data.pickupDate > maxDate) {
+        throw new Error("Choose a pickup date within the next 30 days.");
+      }
+      if (!data.pickupTime || !isPickupSlotBookable(data.pickupDate, data.pickupTime)) {
+        throw new Error("That pickup time is not available. Pick another slot.");
+      }
     }
 
     const ids = data.items.map((item) => item.id);
     const foundItems = await db.select().from(menuItems).where(inArray(menuItems.id, ids));
     const byId = new Map(foundItems.map((item) => [item.id, item]));
 
+    // Packs derive availability from their contents.
+    const packIds = foundItems.filter((item) => item.packSize).map((item) => item.id);
+    const contentsByPackId = await loadPackContentsByPackIds(db, packIds);
+    // Content cookies aren't cart lines; keep their names reachable for
+    // accurate sold-out errors during reservation.
+    const nameByContentId = new Map<string, string>();
+    for (const contents of contentsByPackId.values()) {
+      for (const content of contents) {
+        if (content.cookie) {
+          nameByContentId.set(content.cookieItemId, content.cookie.name);
+        }
+      }
+    }
+    const isLineSellable = (item: (typeof foundItems)[number], quantity: number) => {
+      if (!item.available) {
+        return false;
+      }
+      if (item.packSize) {
+        const contents = contentsByPackId.get(item.id) ?? [];
+        // Packs with contents derive stock from the cookies inside them;
+        // the pack row's own inventory flags never apply. (byId only holds
+        // cart line ids, so resolve via content.cookie.)
+        if (contents.length > 0) {
+          const stock = derivePackStock(item, contents);
+          return stock.available && (!stock.trackInventory || stock.inventoryQuantity >= quantity);
+        }
+        // Content-less packs (manual weight) sell from their own row.
+        return !item.trackInventory || item.inventoryQuantity >= quantity;
+      }
+      return !item.trackInventory || item.inventoryQuantity >= quantity;
+    };
+
     const lines = data.items.map((line) => {
       const item = byId.get(line.id);
-      if (!item || !item.available) {
+      if (!item || !isLineSellable(item, line.quantity)) {
         throw new Error("One or more cookies are no longer available.");
-      }
-      if (item.trackInventory && item.inventoryQuantity < line.quantity) {
-        throw new Error(`${item.name} does not have enough inventory left.`);
       }
 
       return {
@@ -561,6 +805,33 @@ export const createOrder = createServerFn({ method: "POST" })
         lineTotalCents: item.priceCents * line.quantity,
       };
     });
+
+    // Shipping: authoritative price resolution happens before anything is
+    // reserved or persisted, so failures cost nothing.
+    let shippingCents = 0;
+    let handlingCents = 0;
+    let shippingServiceName = "";
+    if (data.shipping) {
+      const settings = await getShippingSettings();
+      const resolved = await resolveShippingOption(
+        {
+          lines,
+          addressTo: {
+            name: data.shipping.address.name,
+            line1: data.shipping.address.line1,
+            line2: data.shipping.address.line2,
+            city: data.shipping.address.city,
+            state: data.shipping.address.state,
+            zip: data.shipping.address.zip,
+            country: data.shipping.address.country,
+          },
+        },
+        data.shipping.serviceTitle,
+      );
+      shippingServiceName = resolved.serviceName;
+      shippingCents = resolved.shippingCents;
+      handlingCents = settings.handlingFeeCents;
+    }
 
     const subtotalCents = lines.reduce((sum, line) => sum + line.lineTotalCents, 0);
     const { userId } = await currentUserEmail();
@@ -571,35 +842,83 @@ export const createOrder = createServerFn({ method: "POST" })
     // Set once the order rows are durably written, so the failure path knows
     // whether to cancel the persisted order (see the catch below).
     let orderPersisted = false;
-    const pickupMenu = await nextAvailableMenu(db, data.pickupDate);
-    const pickupDate = pickupMenu.menuDate;
+    if (!isShipping) {
+      const pickupMenu = await nextAvailableMenu(db, data.pickupDate ?? shopDateIso());
+      pickupDate = pickupMenu.menuDate;
+      pickupTime = data.pickupTime ?? "";
+    }
 
+    // Reservation units, aggregated per line (packs expand into their
+    // cookies, and two packs can share a cookie). Each line's snapshot of
+    // its own contribution is stored on order_items so releases stay correct
+    // even if the pack recipe is edited later.
+    const lineSnapshots: (string | null)[] = [];
     const reservedLines: { itemId: string; quantity: number }[] = [];
     try {
       for (const line of lines) {
-        if (line.item.trackInventory) {
+        const units = new Map<string, number>();
+        if (line.item.packSize) {
+          const contents = contentsByPackId.get(line.item.id) ?? [];
+          for (const content of contents) {
+            // byId only holds cart line ids; the loaded content.cookie is
+            // the authoritative row for the pack's cookies.
+            if (content.cookie?.trackInventory) {
+              units.set(
+                content.cookieItemId,
+                (units.get(content.cookieItemId) ?? 0) + content.quantity * line.quantity,
+              );
+            }
+          }
+          if (contents.length === 0 && line.item.trackInventory) {
+            // Content-less pack (manual weight): reserve the pack row itself.
+            units.set(line.item.id, line.quantity);
+          }
+        } else if (line.item.trackInventory) {
+          units.set(line.item.id, line.quantity);
+        }
+
+        if (units.size === 0) {
+          lineSnapshots.push(null);
+          continue;
+        }
+
+        for (const [itemId, quantity] of units) {
           const reserved = await db
             .update(menuItems)
             .set({
-              inventoryQuantity: sql`${menuItems.inventoryQuantity} - ${line.quantity}`,
-              available: sql`CASE WHEN ${menuItems.inventoryQuantity} - ${line.quantity} > 0 THEN 1 ELSE 0 END`,
+              inventoryQuantity: sql`${menuItems.inventoryQuantity} - ${quantity}`,
+              available: sql`CASE WHEN ${menuItems.inventoryQuantity} - ${quantity} > 0 THEN 1 ELSE 0 END`,
               updatedAt: sql`CURRENT_TIMESTAMP`,
             })
             .where(
               and(
-                eq(menuItems.id, line.item.id),
+                eq(menuItems.id, itemId),
                 eq(menuItems.available, true),
-                gte(menuItems.inventoryQuantity, line.quantity),
+                gte(menuItems.inventoryQuantity, quantity),
               ),
             )
             .returning({ id: menuItems.id });
 
           if (reserved.length === 0) {
-            throw new Error(`${line.item.name} just sold out or does not have enough left.`);
+            // Content cookies aren't cart lines, so look names up in the
+            // contents map too — a pack's cookie selling out mid-order should
+            // say which one, not "An item".
+            const soldOutName = byId.get(itemId)?.name ?? nameByContentId.get(itemId) ?? "An item";
+            throw new Error(`${soldOutName} just sold out or does not have enough left.`);
           }
 
-          reservedLines.push({ itemId: line.item.id, quantity: line.quantity });
+          reservedLines.push({ itemId, quantity });
         }
+        lineSnapshots.push(
+          units.size > 0
+            ? JSON.stringify(
+                [...units.entries()].map(([itemId, quantity]) => ({
+                  menuItemId: itemId,
+                  quantity,
+                })),
+              )
+            : null,
+        );
       }
     } catch (caught) {
       // Mid-loop failure: earlier iterations already reserved stock — give
@@ -609,7 +928,9 @@ export const createOrder = createServerFn({ method: "POST" })
     }
 
     let pickupLocationName = "Bakery Pickup";
-    if (data.pickupLocationId) {
+    let pickupLocationId: string | null = null;
+    if (!isShipping && data.pickupLocationId) {
+      pickupLocationId = data.pickupLocationId;
       const loc = await db.query.pickupLocations
         .findFirst({
           where: eq(pickupLocations.id, data.pickupLocationId),
@@ -620,10 +941,14 @@ export const createOrder = createServerFn({ method: "POST" })
         seedPickupLocations.find((l) => l.id === data.pickupLocationId)?.name ??
         pickupLocationName;
     }
+    if (isShipping) {
+      pickupLocationName = "Shipped";
+    }
 
     try {
       // 1. Persist the order FIRST so a paid Stripe session can never point at
       //    an order that failed to insert. order + items go in one atomic batch.
+      const totalCents = subtotalCents + shippingCents + handlingCents;
       const orderValues = {
         id: orderId,
         orderNumber,
@@ -631,16 +956,28 @@ export const createOrder = createServerFn({ method: "POST" })
         customerName: data.name,
         customerEmail: data.email,
         customerPhone: data.phone,
-        pickupLocationId: data.pickupLocationId,
+        fulfillmentType: isShipping ? ("shipping" as const) : ("pickup" as const),
+        pickupLocationId,
         pickupLocationName,
         pickupDate,
-        pickupTime: data.pickupTime,
+        pickupTime,
+        shippingName: data.shipping?.address.name ?? "",
+        shippingLine1: data.shipping?.address.line1 ?? "",
+        shippingLine2: data.shipping?.address.line2 ?? "",
+        shippingCity: data.shipping?.address.city ?? "",
+        shippingState: data.shipping?.address.state ?? "",
+        shippingZip: data.shipping?.address.zip ?? "",
+        shippingCountry: data.shipping?.address.country ?? "US",
+        shippingServiceName,
+        shippingCents,
+        handlingCents,
+        totalCents,
         notes: data.notes,
         status: "pending" as const,
         subtotalCents,
       };
 
-      const orderItemsValues = lines.map((line) => ({
+      const orderItemsValues = lines.map((line, index) => ({
         id: crypto.randomUUID(),
         orderId,
         menuItemId: line.item.id,
@@ -649,6 +986,7 @@ export const createOrder = createServerFn({ method: "POST" })
         unitPriceCentsSnapshot: line.item.priceCents,
         quantity: line.quantity,
         lineTotalCents: line.lineTotalCents,
+        reservationSnapshot: lineSnapshots[index] ?? null,
       }));
 
       await db.batch([
@@ -707,25 +1045,41 @@ export const createOrder = createServerFn({ method: "POST" })
 
           const session = await stripe.checkout.sessions.create({
             payment_method_types: ["card"],
-            line_items: lines.map((line) => {
-              if (line.item.stripePriceId) {
+            line_items: [
+              ...lines.map((line) => {
+                if (line.item.stripePriceId) {
+                  return {
+                    price: line.item.stripePriceId,
+                    quantity: line.quantity,
+                  };
+                }
                 return {
-                  price: line.item.stripePriceId,
+                  price_data: {
+                    currency: "usd",
+                    product_data: {
+                      name: line.item.name,
+                      description: line.item.description || undefined,
+                    },
+                    unit_amount: line.item.priceCents,
+                  },
                   quantity: line.quantity,
                 };
-              }
-              return {
-                price_data: {
-                  currency: "usd",
-                  product_data: {
-                    name: line.item.name,
-                    description: line.item.description || undefined,
-                  },
-                  unit_amount: line.item.priceCents,
-                },
-                quantity: line.quantity,
-              };
-            }),
+              }),
+              ...(shippingCents + handlingCents > 0
+                ? [
+                    {
+                      price_data: {
+                        currency: "usd",
+                        product_data: {
+                          name: `Shipping${shippingServiceName ? ` — ${shippingServiceName}` : ""} (includes handling)`,
+                        },
+                        unit_amount: shippingCents + handlingCents,
+                      },
+                      quantity: 1,
+                    },
+                  ]
+                : []),
+            ],
             mode: "payment",
             success_url: successUrl,
             cancel_url: cancelUrl,
@@ -781,10 +1135,13 @@ export const createOrder = createServerFn({ method: "POST" })
         orderNumber,
         itemCount: lines.reduce((sum, line) => sum + line.quantity, 0),
         subtotalCents,
-        pickupLocationId: data.pickupLocationId,
+        shippingCents,
+        handlingCents,
+        totalCents,
+        fulfillmentType: isShipping ? "shipping" : "pickup",
         pickupLocationName,
         pickupDate,
-        pickupTime: data.pickupTime,
+        pickupTime,
         userId,
         paymentFlow: checkoutUrl ? "stripe" : "pay_on_pickup",
       });
@@ -884,6 +1241,185 @@ export const getOrder = createServerFn({ method: "GET" })
 
     return order ?? null;
   });
+
+/* ------------------------------------------------------------------ */
+/* Shipping                                                            */
+/* ------------------------------------------------------------------ */
+
+/** Public checkout quote: USPS options for a cart + address, edge-cached. */
+export const getShippingOptions = createServerFn({ method: "POST" })
+  .validator((data: unknown) => shippingQuoteSchema.parse(data))
+  .handler(async ({ data }) => {
+    const db = dbRequired();
+    if (!shippoConfigured()) {
+      return { configured: false, options: [], totalOunces: 0, handlingFeeCents: 0 };
+    }
+
+    // Rate limit per IP: quoting hits Shippo's API; the cache covers repeats
+    // but a script cycling ZIPs must not hammer it.
+    const { getRequestHeaders } = await import("@tanstack/react-start/server");
+    const ip = clientIpFromHeaders(getRequestHeaders());
+    const limit = await rateLimit(db, "quote-shipping", ip, 60, 12);
+    if (!limit.ok) {
+      throw new Error("Too many shipping quotes. Wait a moment and try again.");
+    }
+
+    const found = await db
+      .select()
+      .from(menuItems)
+      .where(
+        inArray(
+          menuItems.id,
+          data.items.map((item) => item.id),
+        ),
+      );
+    const byId = new Map(found.map((item) => [item.id, item]));
+    const lines = data.items.map((line) => {
+      const item = byId.get(line.id);
+      if (!item) {
+        throw new Error("One or more cookies are no longer available.");
+      }
+      return { item, quantity: line.quantity };
+    });
+
+    const result = await quoteShippingRates({
+      lines,
+      addressTo: {
+        name: data.address.name,
+        line1: data.address.line1,
+        line2: data.address.line2,
+        city: data.address.city,
+        state: data.address.state,
+        zip: data.address.zip,
+        country: data.address.country,
+      },
+    });
+    const settings = await getShippingSettings();
+
+    return {
+      configured: true,
+      options: result.options,
+      totalOunces: result.totalOunces,
+      handlingFeeCents: settings.handlingFeeCents,
+    };
+  });
+
+export const getAdminShippingSettings = createServerFn({ method: "GET" }).handler(async () => {
+  await requireAdmin();
+  const settings = await getShippingSettings();
+  return { settings, shippoConfigured: shippoConfigured() };
+});
+
+const adminShippingSettingsSchema = z.object({
+  fromAddress: z
+    .object({
+      name: z.string().min(2),
+      street1: z.string().min(3),
+      street2: z.string().optional().default(""),
+      city: z.string().min(2),
+      state: z.string().length(2),
+      zip: z.string().regex(/^\d{5}(-\d{4})?$/),
+      country: z.literal("US").optional().default("US"),
+    })
+    .nullable(),
+  handlingFeeCents: z.number().int().min(0).max(5000),
+  box: z.object({
+    lengthIn: z.number().min(0.1).max(36),
+    widthIn: z.number().min(0.1).max(36),
+    heightIn: z.number().min(0.1).max(36),
+  }),
+  compareZips: z
+    .array(z.string().regex(/^\d{5}$/))
+    .max(10)
+    .default([]),
+});
+
+export const saveAdminShippingSettings = createServerFn({ method: "POST" })
+  .validator((data: unknown) => adminShippingSettingsSchema.parse(data))
+  .handler(async ({ data }) => {
+    await requireAdmin();
+    const settings: ShippingSettings = {
+      fromAddress: data.fromAddress
+        ? {
+            name: data.fromAddress.name,
+            street1: data.fromAddress.street1,
+            street2: data.fromAddress.street2,
+            city: data.fromAddress.city,
+            state: data.fromAddress.state,
+            zip: data.fromAddress.zip,
+            country: data.fromAddress.country,
+          }
+        : null,
+      handlingFeeCents: data.handlingFeeCents,
+      box: data.box,
+      compareZips: data.compareZips,
+    };
+    await saveShippingSettings(settings);
+    logger.info("admin.shipping_settings_saved");
+    return { ok: true, settings };
+  });
+
+/** Admin rate comparison: fresh Shippo quotes, never cached. */
+export const getAdminShippingRatePreview = createServerFn({ method: "POST" })
+  .validator((data: unknown) => adminRatePreviewSchema.parse(data))
+  .handler(async ({ data }) => {
+    await requireAdmin();
+    if (!shippoConfigured()) {
+      return { configured: false, options: [], totalOunces: 0, handlingFeeCents: 0 };
+    }
+
+    const lines: { item: typeof menuItems.$inferSelect; quantity: number }[] = [];
+    if (data.items && data.items.length > 0) {
+      const db = dbRequired();
+      const found = await db
+        .select()
+        .from(menuItems)
+        .where(
+          inArray(
+            menuItems.id,
+            data.items.map((item) => item.id),
+          ),
+        );
+      const byId = new Map(found.map((item) => [item.id, item]));
+      for (const line of data.items) {
+        const item = byId.get(line.id);
+        if (!item) {
+          throw new Error("Unknown item in the rate preview.");
+        }
+        lines.push({ item, quantity: line.quantity });
+      }
+    }
+
+    const result = await quoteShippingRates({
+      lines,
+      addressTo: {
+        name: data.address.name,
+        line1: data.address.line1,
+        line2: data.address.line2,
+        city: data.address.city,
+        state: data.address.state,
+        zip: data.address.zip,
+        country: data.address.country,
+      },
+      noCache: true,
+      ...(data.manualWeightOunces ? { manualTotalOunces: data.manualWeightOunces } : {}),
+    });
+    const settings = await getShippingSettings();
+
+    return {
+      configured: true,
+      options: result.options,
+      totalOunces: result.totalOunces,
+      handlingFeeCents: settings.handlingFeeCents,
+    };
+  });
+
+/** One-click bootstrap for the Shippo service group /live-rates depends on. */
+export const adminEnsureShippingSetup = createServerFn({ method: "POST" }).handler(async () => {
+  await requireAdmin();
+  const result = await ensureShippingServiceGroup();
+  return result;
+});
 
 export const getAdminOrder = createServerFn({ method: "GET" })
   .validator((id: string) => id)
@@ -1054,13 +1590,43 @@ export const saveMenuItem = createServerFn({ method: "POST" })
       stripeProductId,
       stripePriceId,
       sortOrder: data.sortOrder,
+      weightOunces: data.weightOunces,
+      weightMaxOunces: data.weightMaxOunces ?? null,
+      isShippable: data.isShippable,
+      packSize: data.packSize ?? null,
+      packTareOunces: data.packTareOunces,
       updatedAt: sql`CURRENT_TIMESTAMP`,
     };
+
+    // Pack contents must sum to the pack size so a "6-pack" really holds six.
+    if (data.packSize && data.packContents && data.packContents.length > 0) {
+      const total = data.packContents.reduce((sum, content) => sum + content.quantity, 0);
+      if (total !== data.packSize) {
+        throw new Error(
+          `Pack contents add up to ${total} cookies, but this is a ${data.packSize}-pack. Adjust the quantities.`,
+        );
+      }
+    }
 
     if (data.id) {
       await db.update(menuItems).set(values).where(eq(menuItems.id, data.id));
     } else {
       await db.insert(menuItems).values(values);
+    }
+
+    // Replace-all for pack contents keeps recipes simple to edit.
+    if (data.packSize) {
+      await db.delete(packContentsTable).where(eq(packContentsTable.packItemId, id));
+      if (data.packContents && data.packContents.length > 0) {
+        await db.insert(packContentsTable).values(
+          data.packContents.map((content) => ({
+            id: crypto.randomUUID(),
+            packItemId: id,
+            cookieItemId: content.cookieItemId,
+            quantity: content.quantity,
+          })),
+        );
+      }
     }
 
     logger.info("admin.menu_item_saved", {
@@ -1070,6 +1636,7 @@ export const saveMenuItem = createServerFn({ method: "POST" })
       available: data.available,
       featured: data.featured,
       inventoryQuantity: data.inventoryQuantity,
+      packSize: data.packSize ?? null,
     });
 
     return { id };

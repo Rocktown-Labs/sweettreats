@@ -50,13 +50,10 @@ function AdminOrderDetailPage() {
           <p>{order.customerPhone}</p>
           <p className="muted">Notes: {order.notes || "None"}</p>
         </section>
-        <section className="panel">
-          <p className="eyebrow">Pickup</p>
-          <h2>
-            {order.pickupDate} at {order.pickupTime}
-          </h2>
-
-          {order.pickupLocationName ? (
+        {order.fulfillmentType === "shipping" ? (
+          <section className="panel">
+            <p className="eyebrow">Shipping</p>
+            <h2>{order.shippingServiceName || "USPS"}</h2>
             <div className="pickup-location-detail" style={{ margin: "14px 0 10px" }}>
               <p
                 style={{
@@ -69,73 +66,130 @@ function AdminOrderDetailPage() {
                 }}
               >
                 <MapPin size={16} aria-hidden="true" style={{ color: "#b9823b" }} />
-                <span>{order.pickupLocationName}</span>
+                <span>
+                  {order.shippingName} — {order.shippingCity}, {order.shippingState}{" "}
+                  {order.shippingZip}
+                </span>
               </p>
-              {order.pickupLocation?.address ? (
-                <p className="muted" style={{ margin: "3px 0 0 22px", fontSize: "0.85rem" }}>
-                  {order.pickupLocation.address}
+              <p className="muted" style={{ margin: "3px 0 0 22px", fontSize: "0.85rem" }}>
+                {order.shippingLine1}
+                {order.shippingLine2 ? `, ${order.shippingLine2}` : ""}
+              </p>
+              {order.shippingCents + order.handlingCents > 0 ? (
+                <p className="muted" style={{ margin: "4px 0 0 22px", fontSize: "0.85rem" }}>
+                  Shipping + handling: $
+                  {((order.shippingCents + order.handlingCents) / 100).toFixed(2)} · Total: $
+                  {(order.totalCents / 100).toFixed(2)}
                 </p>
               ) : null}
-              {order.pickupLocation?.phone ? (
-                <p style={{ margin: "4px 0 0 22px", fontSize: "0.85rem" }}>
-                  <a
-                    href={`tel:${order.pickupLocation.phone}`}
-                    className="text-link"
-                    style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}
-                  >
-                    <Phone size={13} aria-hidden="true" />
-                    Call location: {order.pickupLocation.phone}
-                  </a>
-                </p>
-              ) : null}
-              {order.pickupLocation?.instructions ? (
-                <p
-                  className="muted"
-                  style={{ margin: "4px 0 0 22px", fontSize: "0.8rem", fontStyle: "italic" }}
-                >
-                  Note: {order.pickupLocation.instructions}
+              {order.trackingNumber ? (
+                <p style={{ margin: "6px 0 0 22px", fontSize: "0.85rem" }}>
+                  Tracking: {order.trackingNumber}
+                  {order.trackingUrl ? (
+                    <>
+                      {" "}
+                      <a
+                        href={order.trackingUrl}
+                        className="text-link"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Track package
+                      </a>
+                    </>
+                  ) : null}
                 </p>
               ) : null}
             </div>
-          ) : null}
+          </section>
+        ) : (
+          <section className="panel">
+            <p className="eyebrow">Pickup</p>
+            <h2>
+              {order.pickupDate} at {order.pickupTime}
+            </h2>
 
-          <div
-            className="dispatch-reminder"
-            style={{
-              background: "#fff9eb",
-              border: "1.5px solid #d8ae6a",
-              borderRadius: "8px",
-              padding: "10px 12px",
-              margin: "12px 0 16px",
-              fontSize: "0.84rem",
-              lineHeight: 1.4,
-            }}
-          >
-            <strong style={{ display: "block", color: "#2a160d", marginBottom: "2px" }}>
-              Staff Dispatch:
-            </strong>
-            Call {order.pickupLocationName || "the pickup spot"} to relay customer order ticket.
-          </div>
+            {order.pickupLocationName ? (
+              <div className="pickup-location-detail" style={{ margin: "14px 0 10px" }}>
+                <p
+                  style={{
+                    margin: 0,
+                    fontWeight: 700,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    color: "#1b0f08",
+                  }}
+                >
+                  <MapPin size={16} aria-hidden="true" style={{ color: "#b9823b" }} />
+                  <span>{order.pickupLocationName}</span>
+                </p>
+                {order.pickupLocation?.address ? (
+                  <p className="muted" style={{ margin: "3px 0 0 22px", fontSize: "0.85rem" }}>
+                    {order.pickupLocation.address}
+                  </p>
+                ) : null}
+                {order.pickupLocation?.phone ? (
+                  <p style={{ margin: "4px 0 0 22px", fontSize: "0.85rem" }}>
+                    <a
+                      href={`tel:${order.pickupLocation.phone}`}
+                      className="text-link"
+                      style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}
+                    >
+                      <Phone size={13} aria-hidden="true" />
+                      Call location: {order.pickupLocation.phone}
+                    </a>
+                  </p>
+                ) : null}
+                {order.pickupLocation?.instructions ? (
+                  <p
+                    className="muted"
+                    style={{ margin: "4px 0 0 22px", fontSize: "0.8rem", fontStyle: "italic" }}
+                  >
+                    Note: {order.pickupLocation.instructions}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
 
-          <label className="field">
-            <span>Status</span>
-            <select
-              value={order.status}
-              onChange={async (event) => {
-                await saveStatus({
-                  data: { id: order.id, status: event.currentTarget.value },
-                });
-                await router.invalidate();
+            <div
+              className="dispatch-reminder"
+              style={{
+                background: "#fff9eb",
+                border: "1.5px solid #d8ae6a",
+                borderRadius: "8px",
+                padding: "10px 12px",
+                margin: "12px 0 16px",
+                fontSize: "0.84rem",
+                lineHeight: 1.4,
               }}
             >
-              {statuses.map((status) => (
-                <option key={status} value={status}>
-                  {orderStatusLabel(status)}
-                </option>
-              ))}
-            </select>
-          </label>
-        </section>
+              <strong style={{ display: "block", color: "#2a160d", marginBottom: "2px" }}>
+                Staff Dispatch:
+              </strong>
+              Call {order.pickupLocationName || "the pickup spot"} to relay customer order ticket.
+            </div>
+
+            <label className="field">
+              <span>Status</span>
+              <select
+                value={order.status}
+                onChange={async (event) => {
+                  await saveStatus({
+                    data: { id: order.id, status: event.currentTarget.value },
+                  });
+                  await router.invalidate();
+                }}
+              >
+                {statuses.map((status) => (
+                  <option key={status} value={status}>
+                    {orderStatusLabel(status)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </section>
+        )}
       </div>
       <section className="panel" style={{ marginTop: 18 }}>
         <p className="eyebrow">Items</p>

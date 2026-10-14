@@ -19,6 +19,7 @@ import {
   MapPin,
   Package,
   Store,
+  Truck,
   Users,
 } from "lucide-react";
 import type { CSSProperties, ReactNode } from "react";
@@ -29,6 +30,7 @@ const adminLinks = [
   { to: "/admin/daily-menu", label: "Menu days", icon: CalendarDays },
   { to: "/admin/orders", label: "Orders", icon: ClipboardList },
   { to: "/admin/locations", label: "Locations", icon: MapPin },
+  { to: "/admin/shipping", label: "Shipping", icon: Truck },
   { to: "/admin/customers", label: "Customers", icon: Users },
 ] as const;
 

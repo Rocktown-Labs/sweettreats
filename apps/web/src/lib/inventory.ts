@@ -43,26 +43,47 @@ async function releaseLines(
 
 export async function releaseInventoryForOrder(orderId: string): Promise<number> {
   const db = createDb();
-  // Only items that track inventory were ever decremented; releasing
-  // untracked items would add phantom stock.
   const rows = await db
     .select({
       menuItemId: orderItems.menuItemId,
       quantity: orderItems.quantity,
       trackInventory: menuItems.trackInventory,
+      packSize: menuItems.packSize,
+      reservationSnapshot: orderItems.reservationSnapshot,
     })
     .from(orderItems)
-    .innerJoin(menuItems, eq(orderItems.menuItemId, menuItems.id))
+    // Left join: order_items.menuItemId is ON DELETE SET NULL, and the admin
+    // can hard-delete products. A deleted pack must still release its
+    // contents — the reservation snapshot carries its own targets.
+    .leftJoin(menuItems, eq(orderItems.menuItemId, menuItems.id))
     .where(eq(orderItems.orderId, orderId));
 
   const tracked: ReleaseLine[] = [];
   const byId = new Map<string, number>();
+  const addUnits = (units: { menuItemId: string | null; quantity: number }[]) => {
+    for (const unit of units) {
+      if (!unit.menuItemId || unit.quantity <= 0) {
+        continue;
+      }
+      byId.set(unit.menuItemId, (byId.get(unit.menuItemId) ?? 0) + unit.quantity);
+    }
+  };
+
   for (const row of rows) {
-    if (!row.menuItemId || !row.trackInventory) {
+    // Prefer the reservation snapshot: packs expand into cookies, and the
+    // snapshot is immune to recipe edits made after the order was placed.
+    const snapshot = parseReservationSnapshot(row.reservationSnapshot);
+    if (snapshot) {
+      addUnits(snapshot);
       continue;
     }
-    const key = row.menuItemId;
-    byId.set(key, (byId.get(key) ?? 0) + row.quantity);
+    // Legacy rows and non-pack items: release the row itself when the item
+    // tracks inventory. Pack rows with a null snapshot reserved nothing
+    // (content packs draw from their cookies, untracked packs don't count),
+    // so releasing them would add phantom stock.
+    if (row.menuItemId && row.trackInventory && !row.packSize) {
+      addUnits([{ menuItemId: row.menuItemId, quantity: row.quantity }]);
+    }
   }
   for (const [itemId, quantity] of byId) {
     tracked.push({ itemId, quantity });
@@ -72,6 +93,32 @@ export async function releaseInventoryForOrder(orderId: string): Promise<number>
     return 0;
   }
   return releaseLines(db, tracked);
+}
+
+/** Snapshot format: [{"menuItemId":"...","quantity":3}, ...]. Exported for tests. */
+export function parseReservationSnapshot(
+  snapshot: string | null,
+): { menuItemId: string | null; quantity: number }[] | null {
+  if (!snapshot) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(snapshot);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed
+      .filter(
+        (entry): entry is { menuItemId: string; quantity: number } =>
+          typeof entry === "object" &&
+          entry !== null &&
+          typeof (entry as Record<string, unknown>).menuItemId === "string" &&
+          typeof (entry as Record<string, unknown>).quantity === "number",
+      )
+      .map((entry) => ({ menuItemId: entry.menuItemId, quantity: entry.quantity }));
+  } catch {
+    return null;
+  }
 }
 
 /**
