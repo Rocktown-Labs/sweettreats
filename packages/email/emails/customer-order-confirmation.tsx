@@ -30,6 +30,9 @@ export interface CustomerOrderConfirmationEmailProps {
   pickupLocationInstructions?: string;
   pickupDate: string;
   pickupTime: string;
+  /** When set, the email shows shipping details instead of pickup info. */
+  shippingAddress?: string;
+  shippingServiceName?: string;
   subtotalCents: number;
   items: CustomerOrderItemProp[];
   viewOrderUrl?: string;
@@ -48,6 +51,8 @@ export default function CustomerOrderConfirmationEmail({
   pickupLocationInstructions = "Pick up at the front counter. Curbside pickup available upon request.",
   pickupDate = "2026-10-15",
   pickupTime = "2:30 PM",
+  shippingAddress,
+  shippingServiceName,
   subtotalCents = 2450,
   items = [
     { name: "Brown Butter Chocolate Chip", quantity: 4, lineTotalCents: 1400 },
@@ -93,24 +98,38 @@ export default function CustomerOrderConfirmationEmail({
             <Text style={greeting}>Hi {customerName},</Text>
             <Text style={leadText}>
               Thank you for ordering with Sweet Treats LR! We've received your order{" "}
-              <strong>#{orderNumber}</strong> and will have your fresh batch ready for pickup.
+              <strong>#{orderNumber}</strong>
+              {shippingAddress
+                ? " and will bake it fresh and ship it to you."
+                : " and will have your fresh batch ready for pickup."}
             </Text>
 
-            {/* Pickup Spot Box */}
+            {/* Fulfillment Box */}
             <Section style={pickupBox}>
-              <Text style={pickupLabel}>YOUR PICKUP DETAILS</Text>
-              <Text style={pickupSpotName}>{pickupLocationName}</Text>
-              {pickupLocationAddress ? (
-                <Text style={pickupSpotAddress}>{pickupLocationAddress}</Text>
-              ) : null}
-              <Text style={pickupWhen}>
-                🗓️ Scheduled for: <strong>{pickupDate}</strong> at <strong>{pickupTime}</strong>
-              </Text>
-              {pickupLocationInstructions ? (
-                <Text style={pickupInstructions}>
-                  📌 <em>{pickupLocationInstructions}</em>
-                </Text>
-              ) : null}
+              {shippingAddress ? (
+                <>
+                  <Text style={pickupLabel}>YOUR SHIPMENT</Text>
+                  <Text style={pickupSpotName}>{shippingServiceName || "USPS Shipping"}</Text>
+                  <Text style={pickupSpotAddress}>{shippingAddress}</Text>
+                  <Text style={pickupWhen}>📦 We&apos;ll email you when it&apos;s on the way.</Text>
+                </>
+              ) : (
+                <>
+                  <Text style={pickupLabel}>YOUR PICKUP DETAILS</Text>
+                  <Text style={pickupSpotName}>{pickupLocationName}</Text>
+                  {pickupLocationAddress ? (
+                    <Text style={pickupSpotAddress}>{pickupLocationAddress}</Text>
+                  ) : null}
+                  <Text style={pickupWhen}>
+                    🗓️ Scheduled for: <strong>{pickupDate}</strong> at <strong>{pickupTime}</strong>
+                  </Text>
+                  {pickupLocationInstructions ? (
+                    <Text style={pickupInstructions}>
+                      📌 <em>{pickupLocationInstructions}</em>
+                    </Text>
+                  ) : null}
+                </>
+              )}
             </Section>
 
             <Hr style={divider} />

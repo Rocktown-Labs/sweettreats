@@ -76,6 +76,7 @@ export const web = Cloudflare.Website.Vite(
           Config.Redacted("STRIPE_WEBHOOK_SECRET"),
           Redacted.make(""),
         ),
+        SHIPPO_API_KEY: Config.withDefault(Config.Redacted("SHIPPO_API_KEY"), Redacted.make("")),
       },
     };
   }),

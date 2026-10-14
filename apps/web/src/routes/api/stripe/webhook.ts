@@ -72,7 +72,8 @@ export const Route = createFileRoute("/api/stripe/webhook")({
           }
 
           // Trust Stripe's payment state, and confirm the amount actually
-          // charged matches the order before releasing goods.
+          // charged matches the order (items + shipping + handling) before
+          // releasing goods.
           if (session.payment_status !== "paid") {
             logger.warn("stripe.webhook_unpaid_session", {
               orderId,
@@ -81,10 +82,14 @@ export const Route = createFileRoute("/api/stripe/webhook")({
             return new Response("OK", { status: 200 });
           }
           const amountTotal = session.amount_total ?? 0;
-          if (amountTotal !== order.subtotalCents) {
+          const expectedTotal =
+            order.totalCents > 0
+              ? order.totalCents
+              : order.subtotalCents + order.shippingCents + order.handlingCents;
+          if (amountTotal !== expectedTotal) {
             logger.error("stripe.webhook_amount_mismatch", {
               orderId,
-              expected: order.subtotalCents,
+              expected: expectedTotal,
               charged: amountTotal,
             });
             return new Response("Amount mismatch", { status: 400 });

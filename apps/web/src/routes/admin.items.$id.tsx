@@ -1,10 +1,16 @@
 import { Link, useNavigate, useRouter, createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { deleteMenuItem, getAdminMenuItem, saveMenuItem, uploadMenuPhoto } from "../lib/api";
+import {
+  deleteMenuItem,
+  getAdminDashboard,
+  getAdminMenuItem,
+  saveMenuItem,
+  uploadMenuPhoto,
+} from "../lib/api";
 import { imageUrl } from "../lib/format";
 
 export const Route = createFileRoute("/admin/items/$id")({
@@ -44,6 +50,15 @@ function AdminItemDetailPage() {
   const [slug, setSlug] = useState(item?.slug ?? "");
   const [error, setError] = useState("");
   const [isSaving, setSaving] = useState(false);
+  // Shipping / pack fields
+  const [packSize, setPackSize] = useState<string>(item?.packSize ? String(item.packSize) : "");
+  const [packTare, setPackTare] = useState(item?.packTareOunces ? String(item.packTareOunces) : "");
+  const [packContentsState, setPackContentsState] = useState<
+    { cookieItemId: string; quantity: number }[]
+  >(
+    (item as { packContents?: { cookieItemId: string; quantity: number }[] } | null)
+      ?.packContents ?? [],
+  );
   const normalizedCategory = item?.category === "Main Cookies" ? "Cookies" : item?.category;
   const categoryOptions = useMemo(
     () =>
@@ -52,6 +67,31 @@ function AdminItemDetailPage() {
         : categories,
     [normalizedCategory],
   );
+
+  const packContentsTotal = packContentsState.reduce((sum, row) => sum + row.quantity, 0);
+  const packSizeValue = Number(packSize);
+
+  // Cookie options for the pack contents editor (non-pack items only).
+  const fetchDashboard = useServerFn(getAdminDashboard);
+  const [cookieOptions, setCookieOptions] = useState<{ id: string; name: string }[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchDashboard()
+      .then((result) => {
+        if (!cancelled) {
+          setCookieOptions(
+            (result.items ?? [])
+              .filter((option) => !option.packSize && option.id !== item?.id)
+              .map((option) => ({ id: option.id, name: option.name })),
+          );
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchDashboard, item?.id]);
 
   return (
     <div className="admin-main">
@@ -107,6 +147,13 @@ function AdminItemDetailPage() {
                 stripeProductId: item?.stripeProductId,
                 stripePriceId: item?.stripePriceId,
                 sortOrder: Number(form.get("sortOrder") ?? item?.sortOrder ?? 100),
+                weightOunces: Number(form.get("weightOunces") ?? 0) || 0,
+                weightMaxOunces: Number(form.get("weightMaxOunces") ?? 0) || null,
+                isShippable: form.get("isShippable") === "on",
+                packSize: packSizeValue > 0 ? packSizeValue : null,
+                packTareOunces: Number(packTare || 0) || 0,
+                packContents:
+                  packSizeValue > 0 ? packContentsState.filter((row) => row.quantity > 0) : [],
               },
             });
             toast.success("Item saved successfully!");
@@ -207,6 +254,176 @@ function AdminItemDetailPage() {
             <input name="available" type="checkbox" defaultChecked={item?.available ?? true} />
             Show this item on the public menu when it is in stock
           </label>
+
+          {/* Shipping & packs */}
+          <fieldset className="form-section" style={{ marginTop: "8px", padding: "16px" }}>
+            <legend>Shipping</legend>
+            <div className="field-grid">
+              <label className="field">
+                <span>Weight per unit (oz)</span>
+                <input
+                  name="weightOunces"
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  defaultValue={item?.weightOunces ?? 0}
+                />
+                <small className="field-hint">Used for USPS rate quotes.</small>
+              </label>
+              <label className="field">
+                <span>Max weight (oz)</span>
+                <input
+                  name="weightMaxOunces"
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  defaultValue={item?.weightMaxOunces ?? ""}
+                />
+                <small className="field-hint">
+                  Optional upper bound; quotes use this so you never undercharge.
+                </small>
+              </label>
+            </div>
+            <label className="check-row">
+              <input
+                name="isShippable"
+                type="checkbox"
+                defaultChecked={item?.isShippable ?? true}
+              />
+              This item can be shipped (uncheck for cakes/shakes that are pickup-only)
+            </label>
+          </fieldset>
+
+          <fieldset className="form-section" style={{ marginTop: "8px", padding: "16px" }}>
+            <legend>Cookie pack (optional)</legend>
+            <div className="field-grid">
+              <label className="field">
+                <span>Pack size (# of cookies)</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="48"
+                  value={packSize}
+                  onChange={(event) => setPackSize(event.currentTarget.value)}
+                  placeholder="e.g. 6"
+                />
+                <small className="field-hint">
+                  Leave blank for a single item. 3/6/9/12/18/24 all work.
+                </small>
+              </label>
+              <label className="field">
+                <span>Box weight (oz)</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={packTare}
+                  onChange={(event) => setPackTare(event.currentTarget.value)}
+                  placeholder="e.g. 4"
+                />
+                <small className="field-hint">
+                  Box/packaging weight added on top of the cookies inside.
+                </small>
+              </label>
+            </div>
+
+            {packSizeValue > 0 ? (
+              <div style={{ marginTop: "12px" }}>
+                <p style={{ fontSize: "0.86rem", margin: "0 0 8px" }}>
+                  Cookies in this pack —{" "}
+                  <strong className={packContentsTotal === packSizeValue ? "muted" : "sold-out"}>
+                    {packContentsTotal} of {packSizeValue} filled
+                  </strong>
+                </p>
+                {packContentsState.map((row, index) => {
+                  const cookie = cookieOptions.find((option) => option.id === row.cookieItemId);
+                  return (
+                    <div
+                      key={row.cookieItemId + index}
+                      style={{
+                        display: "flex",
+                        gap: "8px",
+                        alignItems: "center",
+                        marginBottom: "6px",
+                      }}
+                    >
+                      <input
+                        type="number"
+                        min="1"
+                        max="48"
+                        value={row.quantity}
+                        onChange={(event) => {
+                          const next = [...packContentsState];
+                          next[index] = {
+                            ...row,
+                            quantity: Math.max(1, Number(event.target.value) || 1),
+                          };
+                          setPackContentsState(next);
+                        }}
+                        style={{ width: "64px" }}
+                        aria-label={`Quantity of ${cookie?.name ?? row.cookieItemId}`}
+                      />
+                      <span style={{ flex: 1 }}>× {cookie?.name ?? row.cookieItemId}</span>
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() =>
+                          setPackContentsState(packContentsState.filter((_, i) => i !== index))
+                        }
+                        aria-label="Remove cookie from pack"
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+                  );
+                })}
+                <div style={{ display: "flex", gap: "8px", alignItems: "end", marginTop: "8px" }}>
+                  <label className="field" style={{ flex: 1, margin: 0 }}>
+                    <span>Add a cookie</span>
+                    <select
+                      value=""
+                      onChange={(event) => {
+                        const cookieItemId = event.currentTarget.value;
+                        if (!cookieItemId) {
+                          return;
+                        }
+                        const existing = packContentsState.find(
+                          (row) => row.cookieItemId === cookieItemId,
+                        );
+                        if (existing) {
+                          setPackContentsState(
+                            packContentsState.map((row) =>
+                              row.cookieItemId === cookieItemId
+                                ? { ...row, quantity: row.quantity + 1 }
+                                : row,
+                            ),
+                          );
+                        } else {
+                          setPackContentsState([
+                            ...packContentsState,
+                            { cookieItemId, quantity: 1 },
+                          ]);
+                        }
+                        event.currentTarget.value = "";
+                      }}
+                    >
+                      <option value="">Pick a cookie…</option>
+                      {cookieOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </div>
+            ) : (
+              <p className="muted" style={{ fontSize: "0.84rem", margin: "8px 0 0" }}>
+                Set a pack size above to define which cookies this box contains.
+              </p>
+            )}
+          </fieldset>
+
           {error ? <p className="sold-out">{error}</p> : null}
           <div className="inline-actions">
             <button type="submit" className="primary-button" disabled={isSaving}>

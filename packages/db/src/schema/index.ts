@@ -1,5 +1,5 @@
 import { relations, sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const orderStatuses = [
   "pending",
@@ -32,6 +32,16 @@ export const menuItems = sqliteTable(
     stripeProductId: text("stripe_product_id"),
     stripePriceId: text("stripe_price_id"),
     sortOrder: integer("sort_order").notNull().default(0),
+    /** Standard shipping weight per unit, in ounces. Used for rate quotes. */
+    weightOunces: real("weight_ounces").notNull().default(0),
+    /** Optional upper bound in ounces; quotes use this when set to never undercharge. */
+    weightMaxOunces: real("weight_max_ounces"),
+    /** Number of cookies in a pack; null for single items. Any size works (3/6/9/12/18/24...). */
+    packSize: integer("pack_size"),
+    /** Box/packaging weight added to a pack's computed weight, in ounces. */
+    packTareOunces: real("pack_tare_ounces").notNull().default(0),
+    /** Whether this item can be shipped. Cakes/shakes stay pickup-only. */
+    isShippable: integer("is_shippable", { mode: "boolean" }).notNull().default(true),
     createdAt: text("created_at")
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -45,6 +55,44 @@ export const menuItems = sqliteTable(
     index("menu_items_featured_idx").on(table.featured),
   ],
 );
+
+/**
+ * Fixed assortments: which cookies (and how many) go inside a pack menu item.
+ * The pack itself is a normal menu item; its availability and shipping weight
+ * derive from these contents.
+ */
+export const packContents = sqliteTable(
+  "pack_contents",
+  {
+    id: text("id").primaryKey(),
+    packItemId: text("pack_item_id")
+      .notNull()
+      .references(() => menuItems.id, { onDelete: "cascade" }),
+    cookieItemId: text("cookie_item_id")
+      .notNull()
+      .references(() => menuItems.id, { onDelete: "cascade" }),
+    quantity: integer("quantity").notNull().default(1),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("pack_contents_pack_cookie_unique").on(table.packItemId, table.cookieItemId),
+  ],
+);
+
+/**
+ * Admin-editable shop configuration (shipping origin, handling fee, box
+ * dimensions, saved rate-compare destinations). Values are JSON strings so
+ * the shape can evolve without a migration per field.
+ */
+export const shopSettings = sqliteTable("shop_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
 
 export const dailyMenuItems = sqliteTable(
   "daily_menu_items",
@@ -185,12 +233,35 @@ export const orders = sqliteTable(
     customerName: text("customer_name").notNull(),
     customerEmail: text("customer_email").notNull(),
     customerPhone: text("customer_phone").notNull(),
+    /** "pickup" | "shipping" */
+    fulfillmentType: text("fulfillment_type").notNull().default("pickup"),
     pickupDate: text("pickup_date").notNull(),
     pickupTime: text("pickup_time").notNull(),
     pickupLocationId: text("pickup_location_id").references(() => pickupLocations.id, {
       onDelete: "set null",
     }),
     pickupLocationName: text("pickup_location_name").notNull().default(""),
+    // Shipping snapshot (authoritative at order time).
+    shippingName: text("shipping_name").notNull().default(""),
+    shippingLine1: text("shipping_line1").notNull().default(""),
+    shippingLine2: text("shipping_line2").notNull().default(""),
+    shippingCity: text("shipping_city").notNull().default(""),
+    shippingState: text("shipping_state").notNull().default(""),
+    shippingZip: text("shipping_zip").notNull().default(""),
+    shippingCountry: text("shipping_country").notNull().default("US"),
+    shippingServiceName: text("shipping_service_name").notNull().default(""),
+    shippingCents: integer("shipping_cents").notNull().default(0),
+    handlingCents: integer("handling_cents").notNull().default(0),
+    /** subtotal + shipping + handling; what the customer is charged. */
+    totalCents: integer("total_cents").notNull().default(0),
+    shippoRateId: text("shippo_rate_id"),
+    shippoShipmentId: text("shippo_shipment_id"),
+    // Fulfilled by phase 3 (label purchase + tracking).
+    trackingNumber: text("tracking_number"),
+    trackingUrl: text("tracking_url"),
+    labelUrl: text("label_url"),
+    shippoTransactionId: text("shippo_transaction_id"),
+    shippingStatus: text("shipping_status").notNull().default(""),
     notes: text("notes").notNull().default(""),
     status: text("status", { enum: orderStatuses }).notNull().default("pending"),
     subtotalCents: integer("subtotal_cents").notNull(),
@@ -210,6 +281,7 @@ export const orders = sqliteTable(
     index("orders_user_idx").on(table.userId),
     index("orders_status_idx").on(table.status),
     index("orders_pickup_location_idx").on(table.pickupLocationId),
+    index("orders_fulfillment_idx").on(table.fulfillmentType),
   ],
 );
 
@@ -226,6 +298,13 @@ export const orderItems = sqliteTable(
     unitPriceCentsSnapshot: integer("unit_price_cents_snapshot").notNull(),
     quantity: integer("quantity").notNull(),
     lineTotalCents: integer("line_total_cents").notNull(),
+    /**
+     * JSON snapshot of the actual inventory reservations made for this line,
+     * e.g. [{"menuItemId":"cookie-1","quantity":3}] after pack expansion.
+     * Release paths use this so recipe edits after purchase can't mis-return
+     * stock. Null for lines that reserved only their own row.
+     */
+    reservationSnapshot: text("reservation_snapshot"),
     createdAt: text("created_at")
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -236,6 +315,21 @@ export const orderItems = sqliteTable(
 export const menuItemsRelations = relations(menuItems, ({ many }) => ({
   dailyMenuItems: many(dailyMenuItems),
   orderItems: many(orderItems),
+  packContents: many(packContents, { relationName: "pack" }),
+  insidePacks: many(packContents, { relationName: "cookie" }),
+}));
+
+export const packContentsRelations = relations(packContents, ({ one }) => ({
+  packItem: one(menuItems, {
+    fields: [packContents.packItemId],
+    references: [menuItems.id],
+    relationName: "pack",
+  }),
+  cookieItem: one(menuItems, {
+    fields: [packContents.cookieItemId],
+    references: [menuItems.id],
+    relationName: "cookie",
+  }),
 }));
 
 export const dailyMenuItemsRelations = relations(dailyMenuItems, ({ one }) => ({

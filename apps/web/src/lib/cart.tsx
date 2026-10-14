@@ -10,6 +10,10 @@ export type CartMenuItem = {
   available?: boolean;
   inventoryQuantity?: number;
   trackInventory?: boolean;
+  /** False for pickup-only items (cakes, shakes); blocks the Ship branch. */
+  isShippable?: boolean;
+  /** Number of cookies when this item is a pack/box. */
+  packSize?: number | null;
 };
 
 export type CartLine = CartMenuItem & {

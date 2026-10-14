@@ -75,6 +75,8 @@ function SuccessPage() {
     return <main className="page">Order not found.</main>;
   }
 
+  const isShippingOrder = order.fulfillmentType === "shipping";
+
   return (
     <main className="page">
       <section className="hero-flyer">
@@ -82,10 +84,47 @@ function SuccessPage() {
           <span className="tagline">Order received</span>
           <h1 className="hero-title">{order.orderNumber}</h1>
           <p className="hero-copy">
-            Pickup is requested for {order.pickupDate} at {order.pickupTime}. The shop will confirm
-            before the box is final.
+            {isShippingOrder
+              ? `We'll bake it fresh and ship it via ${order.shippingServiceName}. The shop will confirm before the box is final.`
+              : `Pickup is requested for ${order.pickupDate} at ${order.pickupTime}. The shop will confirm before the box is final.`}
           </p>
-          {order.pickupLocationName ? (
+          {isShippingOrder ? (
+            <div
+              style={{
+                margin: "16px auto",
+                maxWidth: "420px",
+                padding: "12px 16px",
+                background: "rgba(255, 255, 255, 0.65)",
+                border: "1.5px solid #d8ae6a",
+                borderRadius: "10px",
+                textAlign: "left",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  fontWeight: 700,
+                  color: "#1b0f08",
+                }}
+              >
+                <MapPin size={16} style={{ color: "#b9823b" }} aria-hidden="true" />
+                <span>
+                  Shipping to: {order.shippingCity}, {order.shippingState} {order.shippingZip}
+                </span>
+              </div>
+              <p style={{ margin: "4px 0 0 22px", fontSize: "0.88rem", color: "#4a2a12" }}>
+                {order.shippingName} · {order.shippingLine1}
+                {order.shippingLine2 ? `, ${order.shippingLine2}` : ""}
+              </p>
+              {order.shippingCents > 0 ? (
+                <p style={{ margin: "4px 0 0 22px", fontSize: "0.82rem", color: "#6e4422" }}>
+                  Shipping &amp; handling: {formatMoney(order.shippingCents + order.handlingCents)}
+                </p>
+              ) : null}
+            </div>
+          ) : order.pickupLocationName ? (
             <div
               style={{
                 margin: "16px auto",

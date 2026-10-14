@@ -64,6 +64,7 @@ jobs:
           STRIPE_SECRET_KEY: ${{ env.STAGE == 'prod' && secrets.STRIPE_SECRET_KEY || '' }}
           STRIPE_PUBLISHABLE_KEY: ${{ env.STAGE == 'prod' && secrets.STRIPE_PUBLISHABLE_KEY || '' }}
           STRIPE_WEBHOOK_SECRET: ${{ env.STAGE == 'prod' && secrets.STRIPE_WEBHOOK_SECRET || '' }}
+          SHIPPO_API_KEY: ${{ env.STAGE == 'prod' && secrets.SHIPPO_API_KEY || '' }}
           PULL_REQUEST: ${{ github.event.number }}
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
