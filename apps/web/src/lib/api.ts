@@ -848,11 +848,10 @@ export const createOrder = createServerFn({ method: "POST" })
       pickupTime = data.pickupTime ?? "";
     }
 
-    // Reservation units, aggregated across the whole order (packs expand into
-    // their cookies, and two packs can share a cookie). Each line's snapshot of
+    // Reservation units, aggregated per line (packs expand into their
+    // cookies, and two packs can share a cookie). Each line's snapshot of
     // its own contribution is stored on order_items so releases stay correct
     // even if the pack recipe is edited later.
-    const reservationUnits = new Map<string, number>();
     const lineSnapshots: (string | null)[] = [];
     const reservedLines: { itemId: string; quantity: number }[] = [];
     try {
@@ -908,7 +907,6 @@ export const createOrder = createServerFn({ method: "POST" })
             throw new Error(`${soldOutName} just sold out or does not have enough left.`);
           }
 
-          reservationUnits.set(itemId, (reservationUnits.get(itemId) ?? 0) + quantity);
           reservedLines.push({ itemId, quantity });
         }
         lineSnapshots.push(

@@ -52,7 +52,10 @@ export async function releaseInventoryForOrder(orderId: string): Promise<number>
       reservationSnapshot: orderItems.reservationSnapshot,
     })
     .from(orderItems)
-    .innerJoin(menuItems, eq(orderItems.menuItemId, menuItems.id))
+    // Left join: order_items.menuItemId is ON DELETE SET NULL, and the admin
+    // can hard-delete products. A deleted pack must still release its
+    // contents — the reservation snapshot carries its own targets.
+    .leftJoin(menuItems, eq(orderItems.menuItemId, menuItems.id))
     .where(eq(orderItems.orderId, orderId));
 
   const tracked: ReleaseLine[] = [];

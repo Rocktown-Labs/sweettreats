@@ -199,6 +199,14 @@ function CheckoutPage() {
     }
   };
 
+  // Editing any address field invalidates the quoted rates: clear both the
+  // options AND the selection so a stale serviceTitle can never be submitted
+  // against a different address than the one that was quoted.
+  const resetRates = () => {
+    setRateOptions([]);
+    setSelectedRate("");
+  };
+
   const validate = (form: FormData): FieldErrors => {
     const errors: FieldErrors = {};
     const name = String(form.get("name") ?? "").trim();
@@ -575,7 +583,7 @@ function CheckoutPage() {
                     autoComplete="shipping name"
                     onChange={(event) => {
                       setShipName(event.target.value);
-                      setRateOptions([]);
+                      resetRates();
                       clearFieldError("shipName");
                     }}
                     aria-invalid={fieldErrors.shipName ? true : undefined}
@@ -591,7 +599,7 @@ function CheckoutPage() {
                     autoComplete="shipping address-line1"
                     onChange={(event) => {
                       setShipLine1(event.target.value);
-                      setRateOptions([]);
+                      resetRates();
                       clearFieldError("shipLine1");
                     }}
                     aria-invalid={fieldErrors.shipLine1 ? true : undefined}
@@ -610,7 +618,7 @@ function CheckoutPage() {
                     autoComplete="shipping address-line2"
                     onChange={(event) => {
                       setShipLine2(event.target.value);
-                      setRateOptions([]);
+                      resetRates();
                     }}
                   />
                 </label>
@@ -622,7 +630,7 @@ function CheckoutPage() {
                     autoComplete="shipping address-level2"
                     onChange={(event) => {
                       setShipCity(event.target.value);
-                      setRateOptions([]);
+                      resetRates();
                       clearFieldError("shipCity");
                     }}
                     aria-invalid={fieldErrors.shipCity ? true : undefined}
@@ -639,7 +647,7 @@ function CheckoutPage() {
                     autoComplete="shipping address-level1"
                     onChange={(event) => {
                       setShipState(event.target.value.toUpperCase());
-                      setRateOptions([]);
+                      resetRates();
                       clearFieldError("shipState");
                     }}
                     aria-invalid={fieldErrors.shipState ? true : undefined}
@@ -659,7 +667,7 @@ function CheckoutPage() {
                     autoComplete="shipping postal-code"
                     onChange={(event) => {
                       setShipZip(event.target.value);
-                      setRateOptions([]);
+                      resetRates();
                       clearFieldError("shipZip");
                     }}
                     aria-invalid={fieldErrors.shipZip ? true : undefined}

@@ -453,14 +453,19 @@ function quoteCacheKey(
   lines: { item: ShippableItemLite; quantity: number }[],
   addressTo: ShippingAddress,
   totalOunces: number,
+  settings: ShippingSettings,
 ): string {
   // Rates zone on origin/destination ZIPs, not street addresses, so the key
-  // stays low-cardinality and hits often.
+  // stays low-cardinality and hits often. Box dimensions and the origin
+  // affect the quote, so they belong in the key — editing them in the admin
+  // settings invalidates cached entries naturally.
   const ids = lines
     .map((line) => `${line.item.id}:${line.quantity}`)
     .sort()
     .join(",");
-  return `shippo-quote:v1:${totalOunces}oz:${addressTo.zip}:${ids}`;
+  const originZip = settings.fromAddress?.zip ?? "unset";
+  const { lengthIn, widthIn, heightIn } = settings.box;
+  return `shippo-quote:v2:${totalOunces}oz:${originZip}:${addressTo.zip}:${lengthIn}x${widthIn}x${heightIn}:${ids}`;
 }
 
 /**
@@ -489,7 +494,12 @@ export async function quoteShippingRates(input: QuoteInput) {
     // Surface the same error the uncached path would, without caching it.
     return fetchShippoRates(input);
   }
-  const key = quoteCacheKey(input.lines, input.addressTo, weight.totalOunces);
+  const key = quoteCacheKey(
+    input.lines,
+    input.addressTo,
+    weight.totalOunces,
+    await getShippingSettings(),
+  );
   const cacheRequest = new Request(`https://internal.sweettreats/${encodeURIComponent(key)}`);
 
   const cached = await cache.match(cacheRequest);
