@@ -17,7 +17,7 @@
   },
   "devDependencies": {
     "@sweettreats/config": "workspace:*",
-    "alchemy": "catalog:",
+    "alchemy": "2.0.0-beta.83",
     "typescript": "catalog:"
   }
 }
