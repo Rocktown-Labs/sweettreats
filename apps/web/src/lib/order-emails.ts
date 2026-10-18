@@ -175,10 +175,25 @@ export async function sendOrderNotifications(orderId: string) {
       routedToLocation,
       shopRecipientCount: shopRecipients.length,
     });
+
+    // Surface failures to the outbox consumer: Resend's idempotency keys
+    // dedupe any re-send, so a retry is always safe. Swallowing here would
+    // mark failed deliveries as "sent" and defeat the retry machinery.
+    const adminFailed = shopRecipients.length > 0 && !adminResult.success;
+    const customerFailed = order.customerEmail
+      ? (customerResult as { success?: boolean }).success === false
+      : false;
+    if (adminFailed || customerFailed) {
+      throw new Error(
+        `Email delivery failed (admin: ${adminResult.success}, customer: ${customerResult.success})`,
+      );
+    }
   } catch (err) {
     logger.error("order.emails_dispatch_failed", {
       orderId,
       error: err instanceof Error ? err.message : String(err),
     });
+    // Re-throw: the caller is the queue consumer, which retries with backoff.
+    throw err;
   }
 }
