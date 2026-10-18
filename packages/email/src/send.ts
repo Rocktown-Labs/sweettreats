@@ -9,6 +9,8 @@ import CustomerOrderConfirmationEmail, {
 } from "../emails/customer-order-confirmation";
 import MagicLinkEmail, { type MagicLinkEmailProps } from "../emails/magic-link";
 import VerifyEmail, { type VerifyEmailProps } from "../emails/verify-email";
+import WelcomeEmail, { type WelcomeEmailProps } from "../emails/welcome-email";
+import AbandonedCartEmail, { type AbandonedCartEmailProps } from "../emails/abandoned-cart-email";
 
 export interface SendEmailResult {
   success: boolean;
@@ -179,6 +181,119 @@ export async function sendVerifyEmail(
       JSON.stringify({
         event: "email.verify_email_failed",
         to: options.to,
+        error: error.message,
+      }),
+    );
+    return { success: false, error: error.message };
+  }
+
+  return { success: true, id: data?.id };
+}
+
+export async function sendWelcomeEmail(
+  props: WelcomeEmailProps,
+  options: {
+    to: string;
+    from?: string;
+    apiKey?: string;
+  },
+): Promise<SendEmailResult> {
+  const from = options.from || DEFAULT_FROM_EMAIL;
+  const resend = getResendClient(options.apiKey);
+
+  const element = React.createElement(WelcomeEmail, props);
+  const html = await render(element);
+  const text = await render(element, { plainText: true });
+
+  const subject = "Welcome to Sweet Treats LR!";
+
+  if (!resend) {
+    console.info(
+      JSON.stringify({
+        event: "email.welcome_simulated",
+        to: options.to,
+      }),
+    );
+    return { success: true, mocked: true };
+  }
+
+  const { data, error } = await resend.emails.send(
+    {
+      from,
+      to: options.to,
+      subject,
+      html,
+      text,
+    },
+    {
+      idempotencyKey: `welcome/${options.to}`,
+    },
+  );
+
+  if (error) {
+    console.error(
+      JSON.stringify({
+        event: "email.welcome_failed",
+        to: options.to,
+        error: error.message,
+      }),
+    );
+    return { success: false, error: error.message };
+  }
+
+  return { success: true, id: data?.id };
+}
+
+export async function sendAbandonedCartEmail(
+  props: AbandonedCartEmailProps,
+  options: {
+    to: string;
+    cartId: string;
+    from?: string;
+    apiKey?: string;
+  },
+): Promise<SendEmailResult> {
+  const from = options.from || DEFAULT_FROM_EMAIL;
+  const resend = getResendClient(options.apiKey);
+
+  const element = React.createElement(AbandonedCartEmail, props);
+  const html = await render(element);
+  const text = await render(element, { plainText: true });
+
+  const subject = "Your cookies are still in the box 🍪";
+
+  if (!resend) {
+    console.info(
+      JSON.stringify({
+        event: "email.abandoned_cart_simulated",
+        to: options.to,
+        cartId: options.cartId,
+      }),
+    );
+    return { success: true, mocked: true };
+  }
+
+  const { data, error } = await resend.emails.send(
+    {
+      from,
+      to: options.to,
+      subject,
+      html,
+      text,
+    },
+    {
+      // One abandonment email per cart, ever — retried queue deliveries must
+      // not spam the customer.
+      idempotencyKey: `abandoned-cart/${options.cartId}`,
+    },
+  );
+
+  if (error) {
+    console.error(
+      JSON.stringify({
+        event: "email.abandoned_cart_failed",
+        to: options.to,
+        cartId: options.cartId,
         error: error.message,
       }),
     );

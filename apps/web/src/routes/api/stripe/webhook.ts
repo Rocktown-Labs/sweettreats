@@ -3,8 +3,8 @@ import Stripe from "stripe";
 import { createDb } from "@sweettreats/db";
 import { orders } from "@sweettreats/db/schema/index";
 import { eq, and, ne, sql } from "drizzle-orm";
-import { sendOrderNotifications } from "@/lib/order-emails";
 import { releaseInventoryForOrder } from "@/lib/inventory";
+import { enqueueEmail } from "@/lib/outbox";
 import { logger } from "@/lib/logger";
 import { env } from "@sweettreats/env/server";
 
@@ -46,7 +46,13 @@ export const Route = createFileRoute("/api/stripe/webhook")({
           return new Response("Invalid signature", { status: 400 });
         }
 
-        if (event.type === "checkout.session.completed") {
+        if (
+          event.type === "checkout.session.completed" ||
+          event.type === "checkout.session.async_payment_succeeded"
+        ) {
+          // Delayed-notification methods fire completed while still unpaid;
+          // async_payment_succeeded is the reliable success signal. Fulfill
+          // on both, gated on payment_status below.
           const session = event.data.object as Stripe.Checkout.Session;
           const orderId = session.metadata?.orderId;
           if (!orderId) {
@@ -115,7 +121,9 @@ export const Route = createFileRoute("/api/stripe/webhook")({
             .returning({ id: orders.id });
 
           if (updated.length > 0) {
-            await sendOrderNotifications(orderId);
+            // Confirmation email goes through the outbox — the webhook
+            // returns fast and the queue owns delivery + retries.
+            await enqueueEmail(createDb(), "order.confirmed", { orderId }).catch(() => {});
             logger.info("stripe.webhook_order_confirmed", {
               orderId,
               sessionId: session.id,
@@ -125,7 +133,10 @@ export const Route = createFileRoute("/api/stripe/webhook")({
           }
         }
 
-        if (event.type === "checkout.session.expired") {
+        if (
+          event.type === "checkout.session.expired" ||
+          event.type === "checkout.session.async_payment_failed"
+        ) {
           const session = event.data.object as Stripe.Checkout.Session;
           const orderId = session.metadata?.orderId;
           if (!orderId) {

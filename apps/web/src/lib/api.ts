@@ -8,15 +8,16 @@ import {
   packContents as packContentsTable,
   pickupLocations,
   shopDaySettings,
+  emailOutbox as emailOutboxTable,
+  cartSnapshots as cartSnapshotsTable,
+  user,
 } from "@sweettreats/db/schema/index";
 import { env } from "@sweettreats/env/server";
 import { createServerFn } from "@tanstack/react-start";
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
-import Stripe from "stripe";
 
 import { currentUserEmail, requireAdmin } from "./auth-server";
-import { sendOrderNotifications } from "./order-emails";
 import { createOrderToken, verifyOrderToken } from "./order-token";
 import { releaseReservedLines } from "./inventory";
 import { clientIpFromHeaders, rateLimit } from "./rate-limit";
@@ -32,18 +33,9 @@ import {
   shippoConfigured,
   type ShippingSettings,
 } from "./shipping";
+import { CHECKOUT_INTEGRATION_ID, getStripeClient } from "./stripe-client";
+import { enqueueEmail, queueSend } from "./outbox";
 import { logger } from "./logger";
-
-let stripeClient: Stripe | null | undefined;
-
-function getStripeClient(): Stripe | null {
-  if (stripeClient !== undefined) {
-    return stripeClient;
-  }
-  const stripeSecretKey = (env as any).STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY || "";
-  stripeClient = stripeSecretKey ? new Stripe(stripeSecretKey) : null;
-  return stripeClient;
-}
 
 /** Public base URL for links built for emails and Stripe redirects. */
 function publicBaseUrl(): string {
@@ -74,6 +66,8 @@ const checkoutSchema = z
     phone: z.string().regex(/^\+?[0-9()\-\s]{7,20}$/, "Enter a valid phone number."),
     notes: z.string().max(500).optional().default(""),
     items: z.array(cartLineSchema).min(1).max(50),
+    /** Stable per-cart id from the browser; duplicate submits replay the same order. */
+    clientOrderId: z.string().uuid().optional(),
     // Pickup details (required when not shipping)
     pickupLocationId: z.string().optional(),
     pickupDate: z
@@ -726,6 +720,42 @@ export const getAdminMenuItem = createServerFn({ method: "GET" })
     };
   });
 
+/**
+ * Idempotent replay support: an order created earlier with the same stable
+ * cart id is returned as-is. The order token is a deterministic HMAC of the
+ * order id, so the success URL can be rebuilt exactly.
+ */
+async function replayExistingOrder(db: ReturnType<typeof createDb>, clientOrderId: string) {
+  const existing = await db.query.orders.findFirst({
+    where: eq(orders.clientOrderId, clientOrderId),
+    columns: {
+      id: true,
+      orderNumber: true,
+      checkoutProvider: true,
+      stripeCheckoutSessionId: true,
+      status: true,
+      paymentStatus: true,
+    },
+  });
+  if (!existing) {
+    return null;
+  }
+  const orderToken = await createOrderToken(existing.id);
+  // Rebuild the same result shape createOrder returns, with a fresh Stripe
+  // URL only when the original session is still alive and unpaid.
+  let checkoutUrl: string | null = null;
+  const stripe = getStripeClient();
+  if (stripe && existing.stripeCheckoutSessionId && existing.paymentStatus !== "paid") {
+    try {
+      const session = await stripe.checkout.sessions.retrieve(existing.stripeCheckoutSessionId);
+      checkoutUrl = session.url ?? null;
+    } catch {
+      checkoutUrl = null;
+    }
+  }
+  return { orderId: existing.id, orderNumber: existing.orderNumber, checkoutUrl, orderToken };
+}
+
 export const createOrder = createServerFn({ method: "POST" })
   .validator((data: unknown) => checkoutSchema.parse(data))
   .handler(async ({ data }) => {
@@ -738,6 +768,17 @@ export const createOrder = createServerFn({ method: "POST" })
     const limit = await rateLimit(db, "create-order", ip, 10 * 60, 6);
     if (!limit.ok) {
       throw new Error("Too many orders sent from this connection. Try again in a few minutes.");
+    }
+
+    // Idempotent replay: a retry with the same stable cart id returns the
+    // original order instead of creating (and charging inventory for) a
+    // second one.
+    if (data.clientOrderId) {
+      const existing = await replayExistingOrder(db, data.clientOrderId);
+      if (existing) {
+        logger.info("order.idempotent_replay", { orderId: existing.orderId });
+        return existing;
+      }
     }
 
     // Fulfillment branch: pickup orders validate the slot server-side; shipping
@@ -835,6 +876,16 @@ export const createOrder = createServerFn({ method: "POST" })
 
     const subtotalCents = lines.reduce((sum, line) => sum + line.lineTotalCents, 0);
     const { userId } = await currentUserEmail();
+    // Attach the payment to the shop's Stripe Customer when we know one
+    // (better-auth creates it on signup via the stripe plugin).
+    let stripeCustomerId: string | null = null;
+    if (userId) {
+      const account = await db.query.user.findFirst({
+        where: eq(user.id, userId),
+        columns: { stripeCustomerId: true },
+      });
+      stripeCustomerId = account?.stripeCustomerId ?? null;
+    }
     const orderId = crypto.randomUUID();
     // Timestamp keeps numbers human-sortable; random suffix prevents collisions
     // when two orders land in the same millisecond (unique index would reject).
@@ -956,6 +1007,7 @@ export const createOrder = createServerFn({ method: "POST" })
         customerName: data.name,
         customerEmail: data.email,
         customerPhone: data.phone,
+        clientOrderId: data.clientOrderId ?? null,
         fulfillmentType: isShipping ? ("shipping" as const) : ("pickup" as const),
         pickupLocationId,
         pickupLocationName,
@@ -989,11 +1041,38 @@ export const createOrder = createServerFn({ method: "POST" })
         reservationSnapshot: lineSnapshots[index] ?? null,
       }));
 
+      // The outbox row for pay-on-pickup confirmation travels in the SAME
+      // atomic batch as the order — a crash between insert and send can
+      // never lose the email intent. The Stripe path enqueues its outbox
+      // row from the webhook (or the session-failure fallback) instead.
+      const stripeWillBeUsed = getStripeClient() !== null;
+      const outboxId = crypto.randomUUID();
+      const enqueueConfirmation = !stripeWillBeUsed;
+      const outboxValues = {
+        id: outboxId,
+        event: "order.confirmed",
+        payload: JSON.stringify({ orderId }),
+      };
+
       await db.batch([
         db.insert(orders).values(orderValues),
         db.insert(orderItems).values(orderItemsValues),
+        ...(enqueueConfirmation ? [db.insert(emailOutboxTable).values(outboxValues)] : []),
       ]);
       orderPersisted = true;
+
+      // Recovering this cart (if tracked) marks it won-back for the admin
+      // view and suppresses any pending abandonment email.
+      if (data.clientOrderId) {
+        await db
+          .update(cartSnapshotsTable)
+          .set({ recoveredAt: sql`CURRENT_TIMESTAMP`, updatedAt: sql`CURRENT_TIMESTAMP` })
+          .where(eq(cartSnapshotsTable.id, data.clientOrderId))
+          .catch(() => {});
+      }
+      if (enqueueConfirmation) {
+        await queueSend({ outboxId }).catch(() => {});
+      }
 
       // 2. Build the Stripe session against the persisted order.
       const baseUrl = publicBaseUrl();
@@ -1044,7 +1123,8 @@ export const createOrder = createServerFn({ method: "POST" })
           }
 
           const session = await stripe.checkout.sessions.create({
-            payment_method_types: ["card"],
+            // No payment_method_types: dynamic payment methods let Stripe
+            // surface the most relevant eligible methods per customer.
             line_items: [
               ...lines.map((line) => {
                 if (line.item.stripePriceId) {
@@ -1086,7 +1166,17 @@ export const createOrder = createServerFn({ method: "POST" })
             // Abandoned sessions expire quickly so reserved inventory is
             // released by the checkout.session.expired webhook.
             expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
-            customer_email: data.email || undefined,
+            // Attach the payment to the shop's Stripe Customer when we know
+            // one (better-auth creates it on signup), else fall back to the
+            // email the customer typed.
+            ...(stripeCustomerId
+              ? { customer: stripeCustomerId }
+              : { customer_email: data.email || undefined }),
+            // Discount codes: admins create promotion codes in the Stripe
+            // Dashboard and customers apply them at checkout — no custom
+            // code needed.
+            allow_promotion_codes: true,
+            integration_identifier: CHECKOUT_INTEGRATION_ID,
             metadata: {
               orderId,
               orderNumber,
@@ -1117,7 +1207,8 @@ export const createOrder = createServerFn({ method: "POST" })
         }
       } else {
         // No Stripe (unconfigured or session creation failed): treat as
-        // pay-on-pickup so the order is never stranded in pending.
+        // pay-on-pickup so the order is never stranded in pending, and
+        // enqueue the confirmation email the batch skipped.
         await db
           .update(orders)
           .set({
@@ -1127,6 +1218,11 @@ export const createOrder = createServerFn({ method: "POST" })
             updatedAt: sql`CURRENT_TIMESTAMP`,
           })
           .where(eq(orders.id, orderId));
+        if (!enqueueConfirmation) {
+          // The batch skipped this row because we expected a Stripe session;
+          // the fallback confirmation still needs its email.
+          await enqueueEmail(db, "order.confirmed", { orderId }).catch(() => {});
+        }
       }
 
       // PII stays out of logs: identify orders by id/number only.
@@ -1146,9 +1242,8 @@ export const createOrder = createServerFn({ method: "POST" })
         paymentFlow: checkoutUrl ? "stripe" : "pay_on_pickup",
       });
 
-      if (!checkoutUrl) {
-        await sendOrderNotifications(orderId);
-      }
+      // Confirmation emails flow through the outbox + queue (see the batch
+      // above and the webhook), never inline — failures retry via cron.
 
       return { orderId, orderNumber, checkoutUrl, orderToken };
     } catch (caught) {
@@ -1419,6 +1514,131 @@ export const adminEnsureShippingSetup = createServerFn({ method: "POST" }).handl
   await requireAdmin();
   const result = await ensureShippingServiceGroup();
   return result;
+});
+
+/* ------------------------------------------------------------------ */
+/* Abandoned carts                                                     */
+/* ------------------------------------------------------------------ */
+
+const trackCartSchema = z.object({
+  /** Stable cart id — same key used for order idempotency. */
+  clientOrderId: z.string().uuid(),
+  items: z.array(cartLineSchema).max(50).default([]),
+});
+
+/**
+ * Debounced ping from the cart provider. Server-side prices only: item data
+ * is re-loaded from the DB, never trusted from the client.
+ */
+export const trackCart = createServerFn({ method: "POST" })
+  .validator((data: unknown) => trackCartSchema.parse(data))
+  .handler(async ({ data }) => {
+    const db = dbRequired();
+
+    const { getRequestHeaders } = await import("@tanstack/react-start/server");
+    const ip = clientIpFromHeaders(getRequestHeaders());
+    const limit = await rateLimit(db, "track-cart", ip, 60 * 10, 120);
+    if (!limit.ok) {
+      return { ok: true, throttled: true };
+    }
+
+    const { userId, email } = await currentUserEmail();
+
+    if (data.items.length === 0) {
+      // Cart emptied: drop the snapshot so it stops counting as abandoned.
+      await db.delete(cartSnapshotsTable).where(eq(cartSnapshotsTable.id, data.clientOrderId));
+      return { ok: true, cleared: true };
+    }
+
+    const found = await db
+      .select()
+      .from(menuItems)
+      .where(
+        inArray(
+          menuItems.id,
+          data.items.map((item) => item.id),
+        ),
+      );
+    const byId = new Map(found.map((item) => [item.id, item]));
+
+    const lines: { id: string; name: string; quantity: number; priceCents: number }[] = [];
+    for (const line of data.items) {
+      const item = byId.get(line.id);
+      if (!item) {
+        continue;
+      }
+      lines.push({
+        id: item.id,
+        name: item.name,
+        quantity: line.quantity,
+        priceCents: item.priceCents,
+      });
+    }
+
+    if (lines.length === 0) {
+      return { ok: true, skipped: true };
+    }
+
+    const itemCount = lines.reduce((sum, line) => sum + line.quantity, 0);
+    const subtotalCents = lines.reduce((sum, line) => sum + line.quantity * line.priceCents, 0);
+
+    await db
+      .insert(cartSnapshotsTable)
+      .values({
+        id: data.clientOrderId,
+        userId: userId ?? null,
+        email: email ?? "",
+        lines: JSON.stringify(lines),
+        itemCount,
+        subtotalCents,
+        lastSeenAt: sql`CURRENT_TIMESTAMP`,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .onConflictDoUpdate({
+        target: cartSnapshotsTable.id,
+        set: {
+          userId: userId ?? null,
+          email: email ?? "",
+          lines: JSON.stringify(lines),
+          itemCount,
+          subtotalCents,
+          // A live touch cancels any queued abandonment email claim…
+          lastSeenAt: sql`CURRENT_TIMESTAMP`,
+          // …but an already-sent email stays sent (one per cart, ever).
+          updatedAt: sql`CURRENT_TIMESTAMP`,
+        },
+      });
+
+    return { ok: true };
+  });
+
+export const getAdminAbandonedCarts = createServerFn({ method: "GET" }).handler(async () => {
+  await requireAdmin();
+  const db = dbRequired();
+  const rows = await db
+    .select()
+    .from(cartSnapshotsTable)
+    .orderBy(desc(cartSnapshotsTable.lastSeenAt))
+    .limit(100);
+
+  return rows.map((row) => {
+    let lines: { name: string; quantity: number; priceCents: number }[] = [];
+    try {
+      lines = JSON.parse(row.lines);
+    } catch {
+      lines = [];
+    }
+    return {
+      id: row.id,
+      email: row.email,
+      itemCount: row.itemCount,
+      subtotalCents: row.subtotalCents,
+      lastSeenAt: row.lastSeenAt,
+      abandonedEmailSentAt: row.abandonedEmailSentAt,
+      recoveredAt: row.recoveredAt,
+      lines: lines.map((line) => ({ name: line.name, quantity: line.quantity })),
+    };
+  });
 });
 
 export const getAdminOrder = createServerFn({ method: "GET" })
