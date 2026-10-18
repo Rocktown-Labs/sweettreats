@@ -22,6 +22,10 @@ export const media = Cloudflare.R2.Bucket("media", {
   name: stageScopedName("sweettreats-media"),
 });
 
+export const emailQueue = Cloudflare.Queues.Queue("emailQueue", {
+  name: stageScopedName("sweettreats-email"),
+});
+
 export const web = Cloudflare.Website.Vite(
   "web",
   Stack.useSync((stack) => {
@@ -45,9 +49,13 @@ export const web = Cloudflare.Website.Vite(
       rootDir: "../../apps/web",
       domain,
       workersDev: isDev ? true : false,
+      // Hourly maintenance: stale-order sweep, outbox drain, abandoned-cart
+      // win-back emails, rate-limit pruning.
+      crons: ["0 * * * *"],
       env: {
         DB: database,
         MEDIA: media,
+        EMAIL_QUEUE: emailQueue,
         ADMIN_EMAILS: Config.withDefault(
           Config.String("ADMIN_EMAILS"),
           "lauryan0311@gmail.com,admin@sweettreatslr.com,stlr@demo.com,cg@rocktownlabs.com",
@@ -94,10 +102,23 @@ export default Alchemy.Stack(
     const db = yield* database;
     const site = yield* web;
     const bucket = yield* media;
+    const queue = yield* emailQueue;
+
+    // The web worker's queue() handler drains the email outbox.
+    yield* Cloudflare.Queues.Consumer("emailQueueConsumer", {
+      queueId: queue.queueId,
+      scriptName: site.workerName,
+      settings: {
+        batchSize: 10,
+        maxRetries: 3,
+        maxWaitTimeMs: 5000,
+      },
+    });
 
     return {
       databaseName: db.databaseName,
       mediaBucket: bucket.bucketName,
+      emailQueue: queue.queueName,
       url: site.url,
     };
   }),

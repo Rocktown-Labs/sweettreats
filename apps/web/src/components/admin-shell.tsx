@@ -18,6 +18,7 @@ import {
   LayoutDashboard,
   MapPin,
   Package,
+  ShoppingBag,
   Store,
   Truck,
   Users,
@@ -31,6 +32,7 @@ const adminLinks = [
   { to: "/admin/orders", label: "Orders", icon: ClipboardList },
   { to: "/admin/locations", label: "Locations", icon: MapPin },
   { to: "/admin/shipping", label: "Shipping", icon: Truck },
+  { to: "/admin/carts", label: "Carts", icon: ShoppingBag },
   { to: "/admin/customers", label: "Customers", icon: Users },
 ] as const;
 

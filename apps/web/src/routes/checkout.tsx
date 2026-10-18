@@ -307,6 +307,7 @@ function CheckoutPage() {
                 phone: String(form.get("phone") ?? "").trim(),
                 notes: String(form.get("notes") ?? ""),
                 items: cart.lines.map((line) => ({ id: line.id, quantity: line.quantity })),
+                clientOrderId: cart.clientOrderId || undefined,
                 ...(method === "pickup"
                   ? {
                       pickupLocationId,

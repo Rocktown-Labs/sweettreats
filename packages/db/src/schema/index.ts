@@ -262,6 +262,8 @@ export const orders = sqliteTable(
     labelUrl: text("label_url"),
     shippoTransactionId: text("shippo_transaction_id"),
     shippingStatus: text("shipping_status").notNull().default(""),
+    /** Idempotency key from the browser (stable per cart). Duplicate submits replay the same order. */
+    clientOrderId: text("client_order_id"),
     notes: text("notes").notNull().default(""),
     status: text("status", { enum: orderStatuses }).notNull().default("pending"),
     subtotalCents: integer("subtotal_cents").notNull(),
@@ -277,11 +279,13 @@ export const orders = sqliteTable(
   },
   (table) => [
     uniqueIndex("orders_order_number_unique").on(table.orderNumber),
+    uniqueIndex("orders_client_order_id_unique").on(table.clientOrderId),
     index("orders_email_idx").on(table.customerEmail),
     index("orders_user_idx").on(table.userId),
     index("orders_status_idx").on(table.status),
     index("orders_pickup_location_idx").on(table.pickupLocationId),
     index("orders_fulfillment_idx").on(table.fulfillmentType),
+    index("orders_created_idx").on(table.createdAt),
   ],
 );
 
@@ -346,6 +350,75 @@ export const ordersRelations = relations(orders, ({ many, one }) => ({
     references: [pickupLocations.id],
   }),
 }));
+
+/**
+ * Transactional outbox for notifications: rows are written atomically with
+ * the business event (e.g. in the same db.batch as the order insert), a
+ * Cloudflare Queue consumer drains them, and the hourly cron re-enqueues
+ * anything pending too long — so a crash between write and send can never
+ * silently drop an email.
+ */
+export const emailOutbox = sqliteTable(
+  "email_outbox",
+  {
+    id: text("id").primaryKey(),
+    /** Event type: "welcome" | "order.confirmed" | "order.abandoned_cart" | ... */
+    event: text("event").notNull(),
+    /** JSON payload — always re-load authoritative data from the DB by id inside the handler. */
+    payload: text("payload").notNull(),
+    /** "pending" | "sent" | "failed" */
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error").notNull().default(""),
+    /** ISO timestamp; rows below this stay pending even after send failures. */
+    availableAt: text("available_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("email_outbox_status_idx").on(table.status, table.availableAt),
+    index("email_outbox_created_idx").on(table.createdAt),
+  ],
+);
+
+/**
+ * Client cart snapshots for abandoned-cart detection. The browser pings a
+ * debounced trackCart server fn on cart changes; the cron emails carts that
+ * went quiet for a day (when a contact email is known), and a successful
+ * order with the same clientOrderId marks the cart recovered.
+ */
+export const cartSnapshots = sqliteTable(
+  "cart_snapshots",
+  {
+    /** Equals the cart's clientOrderId — same idempotency key as orders. */
+    id: text("id").primaryKey(),
+    userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
+    email: text("email").notNull().default(""),
+    /** JSON [{id, name, quantity, priceCents}] */
+    lines: text("lines").notNull().default("[]"),
+    itemCount: integer("item_count").notNull().default(0),
+    subtotalCents: integer("subtotal_cents").notNull().default(0),
+    /** Timestamp of the most recent ping. */
+    lastSeenAt: text("last_seen_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    abandonedEmailSentAt: text("abandoned_email_sent_at"),
+    recoveredAt: text("recovered_at"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("cart_snapshots_last_seen_idx").on(table.lastSeenAt)],
+);
 
 export const orderItemsRelations = relations(orderItems, ({ one }) => ({
   order: one(orders, {

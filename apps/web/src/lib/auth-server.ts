@@ -11,6 +11,7 @@ import { eq } from "drizzle-orm";
 import { env } from "@sweettreats/env/server";
 import { logger } from "./logger";
 import { clientIpFromHeaders, rateLimit } from "./rate-limit";
+import { enqueueEmail } from "./outbox";
 
 let authInstance: any = null;
 
@@ -80,6 +81,26 @@ export function getAuth(): ReturnType<typeof betterAuth> {
             // promotion (see resolveUserRole). Demote someone by explicitly
             // setting role='customer' in the database.
             input: false,
+          },
+        },
+      },
+      databaseHooks: {
+        user: {
+          create: {
+            after: async (newUser) => {
+              // Welcome email through the transactional outbox: the row is
+              // durable immediately, the queue drains it, the cron re-drains
+              // anything pending — never silently lost.
+              try {
+                await enqueueEmail(createDb(), "welcome", { userId: newUser.id });
+                logger.info("outbox.welcome_enqueued", { userId: newUser.id });
+              } catch (err) {
+                logger.error("outbox.welcome_enqueue_failed", {
+                  userId: newUser.id,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
+            },
           },
         },
       },
