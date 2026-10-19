@@ -50,6 +50,12 @@ jobs:
       - name: Deploy with Alchemy
         run: bun --cwd packages/infra alchemy deploy --stage ${{ env.STAGE }} --yes
         env:
+          # CI mode: alchemy resolves credentials purely from env vars (no
+          # ~/.alchemy profile), and the state-store login reads its token
+          # from the account Secrets Store via a short-lived edge-preview
+          # Worker on every run. GitHub normally sets CI=true, but we pin it
+          # so the mode never depends on runner defaults.
+          CI: "true"
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           BETTER_AUTH_SECRET: ${{ env.STAGE_BETTER_AUTH_SECRET }}
@@ -127,6 +133,7 @@ jobs:
       - name: Destroy Preview Environment
         run: bun --cwd packages/infra alchemy destroy --stage ${{ env.STAGE }} --yes
         env:
+          CI: "true"
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           # Destroy only reads state; no production secret is ever needed here.
