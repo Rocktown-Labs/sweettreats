@@ -3,7 +3,7 @@ import { cartSnapshots, orders } from "@sweettreats/db/schema/index";
 import { and, eq, lt, sql } from "drizzle-orm";
 
 import { releaseInventoryForOrder } from "../lib/inventory";
-import { reenqueueStaleOutboxRows, queueSend } from "../lib/outbox";
+import { reenqueueStaleOutboxRows, queueSend, enqueueEmail } from "../lib/outbox";
 import { logger } from "../lib/logger";
 import { getStripeClient } from "../lib/stripe-client";
 
@@ -55,17 +55,33 @@ async function sweepStalePendingOrders(): Promise<void> {
     return;
   }
 
-  const stripe = getStripeClient();
+  const stripe = await getStripeClient();
   let cancelled = 0;
 
   for (const order of stale) {
-    // If the session was actually paid, leave it alone — the webhook owns
-    // confirmation; cancelling here could strand a paid order.
+    // If the session was actually paid, confirm it — the webhook may have
+    // been missed (endpoint down, event dropped). Only the webhook or this
+    // sweep may confirm; both require proof from Stripe.
     if (stripe && order.stripeCheckoutSessionId) {
       try {
         const session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
         if (session.payment_status === "paid") {
-          logger.warn("cron.paid_order_missing_webhook", { orderId: order.id });
+          const confirmed = await db
+            .update(orders)
+            .set({
+              status: "confirmed",
+              paymentStatus: "paid",
+              checkoutProvider: "stripe",
+              updatedAt: sql`CURRENT_TIMESTAMP`,
+            })
+            .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
+            .returning({ id: orders.id });
+          if (confirmed.length > 0) {
+            await enqueueEmail(createDb(), "order.confirmed", { orderId: order.id }).catch(
+              () => {},
+            );
+            logger.warn("cron.confirmed_paid_order_missing_webhook", { orderId: order.id });
+          }
           continue;
         }
       } catch (err) {

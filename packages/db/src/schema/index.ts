@@ -420,6 +420,23 @@ export const cartSnapshots = sqliteTable(
   (table) => [index("cart_snapshots_last_seen_idx").on(table.lastSeenAt)],
 );
 
+/**
+ * Admin-managed integration API keys (Stripe, Shippo). Values are stored
+ * AES-GCM encrypted — see lib/secure-settings.ts — so pasting live keys in
+ * the admin sheet never leaves plaintext in the database.
+ */
+export const apiKeys = sqliteTable("api_keys", {
+  /** Logical key: "stripe_secret" | "stripe_publishable" | "stripe_webhook" | "shippo_api" */
+  key: text("key").primaryKey(),
+  /** Encrypted value: "v1:<iv-b64>:<ciphertext-b64>". */
+  value: text("value").notNull(),
+  /** Last 4 chars of the plaintext for masked display. */
+  last4: text("last4").notNull().default(""),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const orderItemsRelations = relations(orderItems, ({ one }) => ({
   order: one(orders, {
     fields: [orderItems.orderId],

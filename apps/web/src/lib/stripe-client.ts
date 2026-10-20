@@ -1,22 +1,39 @@
 import Stripe from "stripe";
-import { env } from "@sweettreats/env/server";
+
+import { INTEGRATION_KEY_IDS, resolveIntegrationKey } from "./secure-settings";
 
 /**
- * Module-cached Stripe client. Omitting apiVersion pins the SDK's default
- * (current best practice: always ride the latest API version).
+ * Module-cached Stripe client, keyed by the resolved secret so a key change
+ * (Admin → Integrations sheet) self-invalidates without a redeploy.
  *
- * Checkout sessions must NOT hardcode payment_method_types — dynamic payment
- * methods are the default and rank eligible methods for conversion.
+ * Resolution order: sheet (admin-managed, encrypted in D1) → env var →
+ * unset. Checkout sessions must NOT hardcode payment_method_types — dynamic
+ * payment methods are the default and rank eligible methods for conversion.
  */
-let stripeClient: Stripe | null | undefined;
+let cached: { key: string; client: Stripe } | null = null;
 
-export function getStripeClient(): Stripe | null {
-  if (stripeClient !== undefined) {
-    return stripeClient;
+export async function getStripeClient(): Promise<Stripe | null> {
+  const key = await resolveIntegrationKey(INTEGRATION_KEY_IDS.stripeSecret);
+  if (!key) {
+    return null;
   }
-  const stripeSecretKey = (env as Record<string, unknown>).STRIPE_SECRET_KEY as string | undefined;
-  stripeClient = stripeSecretKey ? new Stripe(stripeSecretKey) : null;
-  return stripeClient;
+  if (cached?.key === key) {
+    return cached.client;
+  }
+  cached = { key, client: new Stripe(key) };
+  return cached.client;
+}
+
+/** The current resolved secret's mode, for admin-facing status displays. */
+export async function currentStripeMode(): Promise<"test" | "live" | null> {
+  const key = await resolveIntegrationKey(INTEGRATION_KEY_IDS.stripeSecret);
+  if (!key) return null;
+  return key.startsWith("sk_live_") ? "live" : "test";
+}
+
+/** Validating constructor used by the sheet save flow — never cached. */
+export function stripeClientFor(key: string): Stripe {
+  return new Stripe(key);
 }
 
 /**

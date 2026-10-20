@@ -33,7 +33,14 @@ import {
   shippoConfigured,
   type ShippingSettings,
 } from "./shipping";
-import { CHECKOUT_INTEGRATION_ID, getStripeClient } from "./stripe-client";
+import {
+  CHECKOUT_INTEGRATION_ID,
+  currentStripeMode,
+  getStripeClient,
+  stripeClientFor,
+} from "./stripe-client";
+import { INTEGRATION_KEY_IDS, integrationKeyStatus, storeIntegrationKey } from "./secure-settings";
+import { shippoClientFor } from "./shipping";
 import { enqueueEmail, queueSend } from "./outbox";
 import { logger } from "./logger";
 
@@ -744,7 +751,7 @@ async function replayExistingOrder(db: ReturnType<typeof createDb>, clientOrderI
   // Rebuild the same result shape createOrder returns, with a fresh Stripe
   // URL only when the original session is still alive and unpaid.
   let checkoutUrl: string | null = null;
-  const stripe = getStripeClient();
+  const stripe = await getStripeClient();
   if (stripe && existing.stripeCheckoutSessionId && existing.paymentStatus !== "paid") {
     try {
       const session = await stripe.checkout.sessions.retrieve(existing.stripeCheckoutSessionId);
@@ -1045,7 +1052,7 @@ export const createOrder = createServerFn({ method: "POST" })
       // atomic batch as the order — a crash between insert and send can
       // never lose the email intent. The Stripe path enqueues its outbox
       // row from the webhook (or the session-failure fallback) instead.
-      const stripeWillBeUsed = getStripeClient() !== null;
+      const stripeWillBeUsed = (await getStripeClient()) !== null;
       const outboxId = crypto.randomUUID();
       const enqueueConfirmation = !stripeWillBeUsed;
       const outboxValues = {
@@ -1080,7 +1087,7 @@ export const createOrder = createServerFn({ method: "POST" })
       const successUrl = `${baseUrl}/order/success?orderId=${orderId}&t=${orderToken}&session_id={CHECKOUT_SESSION_ID}`;
       const cancelUrl = `${baseUrl}/checkout`;
 
-      const stripe = getStripeClient();
+      const stripe = await getStripeClient();
       let checkoutUrl: string | null = null;
       let stripeCheckoutSessionId: string | null = null;
 
@@ -1306,7 +1313,7 @@ export const getOrder = createServerFn({ method: "GET" })
     // Sync payment state from Stripe, but never send email from a GET path —
     // the webhook is the notification path, and GETs must be side-effect free.
     if (order.status === "pending" && stripeSessionMatches && data.sessionId) {
-      const stripe = getStripeClient();
+      const stripe = await getStripeClient();
       if (stripe) {
         try {
           const session = await stripe.checkout.sessions.retrieve(data.sessionId);
@@ -1346,7 +1353,7 @@ export const getShippingOptions = createServerFn({ method: "POST" })
   .validator((data: unknown) => shippingQuoteSchema.parse(data))
   .handler(async ({ data }) => {
     const db = dbRequired();
-    if (!shippoConfigured()) {
+    if (!(await shippoConfigured())) {
       return { configured: false, options: [], totalOunces: 0, handlingFeeCents: 0 };
     }
 
@@ -1402,7 +1409,7 @@ export const getShippingOptions = createServerFn({ method: "POST" })
 export const getAdminShippingSettings = createServerFn({ method: "GET" }).handler(async () => {
   await requireAdmin();
   const settings = await getShippingSettings();
-  return { settings, shippoConfigured: shippoConfigured() };
+  return { settings, shippoConfigured: await shippoConfigured() };
 });
 
 const adminShippingSettingsSchema = z.object({
@@ -1459,7 +1466,7 @@ export const getAdminShippingRatePreview = createServerFn({ method: "POST" })
   .validator((data: unknown) => adminRatePreviewSchema.parse(data))
   .handler(async ({ data }) => {
     await requireAdmin();
-    if (!shippoConfigured()) {
+    if (!(await shippoConfigured())) {
       return { configured: false, options: [], totalOunces: 0, handlingFeeCents: 0 };
     }
 
@@ -1641,6 +1648,135 @@ export const getAdminAbandonedCarts = createServerFn({ method: "GET" }).handler(
   });
 });
 
+/* ------------------------------------------------------------------ */
+/* Integrations sheet (admin-managed API keys)                          */
+/* ------------------------------------------------------------------ */
+
+export const getIntegrationSettings = createServerFn({ method: "GET" }).handler(async () => {
+  await requireAdmin();
+  const [stripeSecret, stripePublishable, stripeWebhook, shippoApi] = await Promise.all([
+    integrationKeyStatus(INTEGRATION_KEY_IDS.stripeSecret),
+    integrationKeyStatus(INTEGRATION_KEY_IDS.stripePublishable),
+    integrationKeyStatus(INTEGRATION_KEY_IDS.stripeWebhook),
+    integrationKeyStatus(INTEGRATION_KEY_IDS.shippoApi),
+  ]);
+  return {
+    stripe: {
+      secret: stripeSecret,
+      publishable: stripePublishable,
+      webhook: stripeWebhook,
+      mode: await currentStripeMode(),
+    },
+    shippo: { api: shippoApi },
+  };
+});
+
+const saveIntegrationKeysSchema = z.object({
+  /** Empty string = clear; undefined = leave unchanged. */
+  stripeSecret: z.string().trim().optional(),
+  stripePublishable: z.string().trim().optional(),
+  stripeWebhook: z.string().trim().optional(),
+  shippoApi: z.string().trim().optional(),
+});
+
+/**
+ * Save integration keys from the admin sheet. Every non-empty value is
+ * validated LIVE before it's stored (Stripe: balance lookup; Shippo: a
+ * cheap authenticated read), so a typo can never take checkout or shipping
+ * down. On a Stripe secret change the menu syncs to the new account
+ * immediately ("on save, sync stripe").
+ */
+export const saveIntegrationKeys = createServerFn({ method: "POST" })
+  .validator((data: unknown) => saveIntegrationKeysSchema.parse(data))
+  .handler(async ({ data }) => {
+    await requireAdmin();
+    const db = dbRequired();
+
+    const { getRequestHeaders } = await import("@tanstack/react-start/server");
+    const ip = clientIpFromHeaders(getRequestHeaders());
+    const limit = await rateLimit(db, "save-integration-keys", ip, 60 * 10, 20);
+    if (!limit.ok) {
+      throw new Error("Too many save attempts. Wait a few minutes and try again.");
+    }
+
+    let stripeSynced: { synced: number; total: number } | null = null;
+    let stripeSecretChanged = false;
+
+    if (typeof data.stripeSecret === "string" && data.stripeSecret) {
+      if (!data.stripeSecret.match(/^sk_(test|live)_/)) {
+        throw new Error("Stripe secret keys start with sk_test_ or sk_live_.");
+      }
+      // Validate live before storing: never let a bad key enter the store.
+      const probe = stripeClientFor(data.stripeSecret);
+      try {
+        await probe.balance.retrieve();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Stripe rejected that key: ${message.slice(0, 200)}`);
+      }
+      await storeIntegrationKey(INTEGRATION_KEY_IDS.stripeSecret, data.stripeSecret);
+      stripeSecretChanged = true;
+    } else if (data.stripeSecret === "") {
+      await storeIntegrationKey(INTEGRATION_KEY_IDS.stripeSecret, "");
+    }
+
+    if (typeof data.stripePublishable === "string" && data.stripePublishable) {
+      if (!data.stripePublishable.match(/^pk_(test|live)_/)) {
+        throw new Error("Stripe publishable keys start with pk_test_ or pk_live_.");
+      }
+      await storeIntegrationKey(INTEGRATION_KEY_IDS.stripePublishable, data.stripePublishable);
+    } else if (data.stripePublishable === "") {
+      await storeIntegrationKey(INTEGRATION_KEY_IDS.stripePublishable, "");
+    }
+
+    if (typeof data.stripeWebhook === "string" && data.stripeWebhook) {
+      if (!data.stripeWebhook.startsWith("whsec_")) {
+        throw new Error("Stripe webhook signing secrets start with whsec_.");
+      }
+      await storeIntegrationKey(INTEGRATION_KEY_IDS.stripeWebhook, data.stripeWebhook);
+    } else if (data.stripeWebhook === "") {
+      await storeIntegrationKey(INTEGRATION_KEY_IDS.stripeWebhook, "");
+    }
+
+    if (typeof data.shippoApi === "string" && data.shippoApi) {
+      if (!/^shippo_(test|live)_/.exec(data.shippoApi)) {
+        throw new Error("Shippo API tokens start with shippo_test_ or shippo_live_.");
+      }
+      const probe = shippoClientFor(data.shippoApi);
+      try {
+        await probe.serviceGroups.list({});
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Shippo rejected that key: ${message.slice(0, 200)}`);
+      }
+      await storeIntegrationKey(INTEGRATION_KEY_IDS.shippoApi, data.shippoApi);
+    } else if (data.shippoApi === "") {
+      await storeIntegrationKey(INTEGRATION_KEY_IDS.shippoApi, "");
+    }
+
+    // "On save, sync Stripe": a new secret means a new (or newly connected)
+    // account — sync products and prices right away so checkout works.
+    if (stripeSecretChanged) {
+      const stripe = await getStripeClient();
+      if (stripe) {
+        stripeSynced = await syncMenuItemsToStripe(stripe);
+      }
+    }
+
+    logger.info("admin.integration_keys_saved", {
+      stripeSecretChanged,
+      stripeSynced: stripeSynced?.synced ?? null,
+      cleared: [
+        data.stripeSecret === "" ? "stripe_secret" : null,
+        data.stripePublishable === "" ? "stripe_publishable" : null,
+        data.stripeWebhook === "" ? "stripe_webhook" : null,
+        data.shippoApi === "" ? "shippo_api" : null,
+      ].filter(Boolean),
+    });
+
+    return { ok: true, stripeSynced };
+  });
+
 export const getAdminOrder = createServerFn({ method: "GET" })
   .validator((id: string) => id)
   .handler(async ({ data: id }) => {
@@ -1743,7 +1879,7 @@ export const saveMenuItem = createServerFn({ method: "POST" })
     let stripeProductId = data.stripeProductId || null;
     let stripePriceId = data.stripePriceId || null;
 
-    const stripe = getStripeClient();
+    const stripe = await getStripeClient();
     if (stripe) {
       try {
         if (!stripeProductId) {
@@ -1862,13 +1998,13 @@ export const saveMenuItem = createServerFn({ method: "POST" })
     return { id };
   });
 
-export const syncAllItemsToStripe = createServerFn({ method: "POST" }).handler(async () => {
-  await requireAdmin();
-  const stripe = getStripeClient();
-  if (!stripe) {
-    return { success: false, message: "Stripe is not configured in this environment." };
-  }
-
+/**
+ * Sync every menu item to Stripe (products + prices). Shared by the admin
+ * sync button and the Integrations-sheet save flow ("on save, sync Stripe").
+ */
+async function syncMenuItemsToStripe(
+  stripe: import("stripe").Stripe,
+): Promise<{ synced: number; total: number }> {
   const db = dbRequired();
   const items = await db.select().from(menuItems);
   let synced = 0;
@@ -1918,7 +2054,18 @@ export const syncAllItemsToStripe = createServerFn({ method: "POST" }).handler(a
   }
 
   logger.info("stripe.sync_all_completed", { synced, total: items.length });
-  return { success: true, synced, total: items.length };
+  return { synced, total: items.length };
+}
+
+export const syncAllItemsToStripe = createServerFn({ method: "POST" }).handler(async () => {
+  await requireAdmin();
+  const stripe = await getStripeClient();
+  if (!stripe) {
+    return { success: false, message: "Stripe is not configured in this environment." };
+  }
+
+  const result = await syncMenuItemsToStripe(stripe);
+  return { success: true, ...result };
 });
 
 export const uploadMenuPhoto = createServerFn({ method: "POST" })

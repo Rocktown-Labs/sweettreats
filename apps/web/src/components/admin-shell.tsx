@@ -15,6 +15,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import {
   CalendarDays,
   ClipboardList,
+  KeyRound,
   LayoutDashboard,
   MapPin,
   Package,
@@ -33,6 +34,7 @@ const adminLinks = [
   { to: "/admin/locations", label: "Locations", icon: MapPin },
   { to: "/admin/shipping", label: "Shipping", icon: Truck },
   { to: "/admin/carts", label: "Carts", icon: ShoppingBag },
+  { to: "/admin/settings", label: "Integrations", icon: KeyRound },
   { to: "/admin/customers", label: "Customers", icon: Users },
 ] as const;
 

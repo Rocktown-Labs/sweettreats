@@ -5,21 +5,16 @@ import { orders } from "@sweettreats/db/schema/index";
 import { eq, and, ne, sql } from "drizzle-orm";
 import { releaseInventoryForOrder } from "@/lib/inventory";
 import { enqueueEmail } from "@/lib/outbox";
+import { INTEGRATION_KEY_IDS, resolveIntegrationKey } from "@/lib/secure-settings";
 import { logger } from "@/lib/logger";
-import { env } from "@sweettreats/env/server";
-
-function readEnv(key: string): string {
-  const processEnv = typeof process === "undefined" ? undefined : process.env[key];
-  return String((env as Record<string, unknown>)[key] ?? processEnv ?? "");
-}
 
 export const Route = createFileRoute("/api/stripe/webhook")({
   server: {
     handlers: {
       POST: async ({ request }) => {
         const signature = request.headers.get("stripe-signature");
-        const stripeSecretKey = readEnv("STRIPE_SECRET_KEY");
-        const webhookSecret = readEnv("STRIPE_WEBHOOK_SECRET");
+        const stripeSecretKey = await resolveIntegrationKey(INTEGRATION_KEY_IDS.stripeSecret);
+        const webhookSecret = await resolveIntegrationKey(INTEGRATION_KEY_IDS.stripeWebhook);
 
         // Fail closed: if Stripe isn't configured, or the signing secret or
         // signature is missing, never accept the event. There is no

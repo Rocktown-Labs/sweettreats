@@ -1,15 +1,10 @@
 import { Shippo } from "shippo";
 import { createDb } from "@sweettreats/db";
-import {
-  menuItems,
-  packContents,
-  shopSettings,
-  type menuItems as _menuItemsType,
-} from "@sweettreats/db/schema/index";
+import { menuItems, packContents, shopSettings } from "@sweettreats/db/schema/index";
 import { eq, inArray, sql } from "drizzle-orm";
-import { env } from "@sweettreats/env/server";
 
 import { logger } from "./logger";
+import { INTEGRATION_KEY_IDS, resolveIntegrationKey } from "./secure-settings";
 
 /**
  * Shippo shipping integration.
@@ -22,8 +17,6 @@ import { logger } from "./logger";
  * - The public quote endpoint is rate-limited and edge-cached so address
  *   typing can't hammer Shippo's API or trip quotas.
  */
-
-const SHIPPO_API_KEY_ENV = "SHIPPO_API_KEY";
 
 type Db = ReturnType<typeof createDb>;
 
@@ -101,22 +94,27 @@ export async function saveShippingSettings(next: ShippingSettings): Promise<Ship
   return next;
 }
 
-let shippoClient: Shippo | null | undefined;
+let shippoClient: { key: string; client: Shippo } | null = null;
 
-function getShippoClient(): Shippo | null {
-  if (shippoClient !== undefined) {
-    return shippoClient;
+async function getShippoClient(): Promise<Shippo | null> {
+  const key = await resolveIntegrationKey(INTEGRATION_KEY_IDS.shippoApi);
+  if (!key) {
+    return null;
   }
-  const key =
-    (env as Record<string, unknown>)[SHIPPO_API_KEY_ENV] ??
-    (typeof process === "undefined" ? undefined : process.env?.[SHIPPO_API_KEY_ENV]) ??
-    "";
-  shippoClient = key ? new Shippo({ apiKeyHeader: String(key) }) : null;
-  return shippoClient;
+  if (shippoClient?.key === key) {
+    return shippoClient.client;
+  }
+  shippoClient = { key, client: new Shippo({ apiKeyHeader: key }) };
+  return shippoClient.client;
 }
 
-export function shippoConfigured(): boolean {
-  return getShippoClient() !== null;
+/** Validating constructor used by the sheet save flow — never cached. */
+export function shippoClientFor(key: string): Shippo {
+  return new Shippo({ apiKeyHeader: key });
+}
+
+export async function shippoConfigured(): Promise<boolean> {
+  return (await getShippoClient()) !== null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -354,7 +352,7 @@ async function fetchShippoRates(input: QuoteInput): Promise<{
   options: ShippingQuoteOption[];
   totalOunces: number;
 }> {
-  const shippo = getShippoClient();
+  const shippo = await getShippoClient();
   const settings = await getShippingSettings();
   if (!shippo) {
     throw new Error("Shipping is not configured yet.");
@@ -549,7 +547,7 @@ export async function ensureShippingServiceGroup(): Promise<{
   existed: boolean;
   message: string;
 }> {
-  const shippo = getShippoClient();
+  const shippo = await getShippoClient();
   if (!shippo) {
     return { ok: false, existed: false, message: "Shipping is not configured (missing API key)." };
   }
