@@ -83,16 +83,15 @@ function HeaderAuthControls() {
   if (session?.user) {
     return (
       <>
-        {/* Admins manage orders from the admin area, so they don't get the customer Orders tab. */}
+        {/* Admins get both tabs — manage the shop AND track their own orders. */}
         {isAdmin ? (
           <Link to="/admin" className="text-button account-link">
             Admin
           </Link>
-        ) : (
-          <Link to="/account/orders" className="text-button account-link">
-            Orders
-          </Link>
-        )}
+        ) : null}
+        <Link to="/account/orders" className="text-button account-link">
+          Orders
+        </Link>
         <button
           type="button"
           className="text-button"

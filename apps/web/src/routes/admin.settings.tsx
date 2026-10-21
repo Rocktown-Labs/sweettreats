@@ -1,10 +1,16 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
-import { KeyRound, Save, RefreshCw, ShieldCheck } from "lucide-react";
+import { Bell, KeyRound, Save, RefreshCw, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 
-import { getIntegrationSettings, saveIntegrationKeys, syncAllItemsToStripe } from "../lib/api";
+import {
+  getIntegrationSettings,
+  getNotificationSettings,
+  saveIntegrationKeys,
+  saveNotificationEmails,
+  syncAllItemsToStripe,
+} from "../lib/api";
 
 export const Route = createFileRoute("/admin/settings")({
   loader: () => getIntegrationSettings(),
@@ -99,6 +105,7 @@ function AdminSettingsPage() {
   const router = useRouter();
   const saveKeys = useServerFn(saveIntegrationKeys);
   const syncNow = useServerFn(syncAllItemsToStripe);
+  const saveNotifications = useServerFn(saveNotificationEmails);
 
   const [settings, setSettings] = useState<IntegrationSettings>(initial);
   const [values, setValues] = useState<Record<FieldId, string>>({
@@ -115,6 +122,16 @@ function AdminSettingsPage() {
   });
   const [isSaving, setSaving] = useState(false);
   const [isSyncing, setSyncing] = useState(false);
+
+  // Notification recipients
+  const [notificationEmails, setNotificationEmails] = useState("");
+  const [isSavingNotifications, setSavingNotifications] = useState(false);
+
+  useEffect(() => {
+    getNotificationSettings()
+      .then((result) => setNotificationEmails(result.emails.join(", ")))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (router.state.location.pathname === "/admin/settings") return;
@@ -185,6 +202,27 @@ function AdminSettingsPage() {
     }
   };
 
+  const saveNotificationsList = async () => {
+    setSavingNotifications(true);
+    try {
+      const emails = notificationEmails
+        .split(/[\n,]+/)
+        .map((email) => email.trim())
+        .filter(Boolean);
+      if (emails.length === 0) {
+        toast.error("Enter at least one email address.");
+        return;
+      }
+      const result = await saveNotifications({ data: { emails } });
+      setNotificationEmails(result.emails.join(", "));
+      toast.success("Order notifications will go to those addresses.");
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "Could not save recipients.");
+    } finally {
+      setSavingNotifications(false);
+    }
+  };
+
   return (
     <div className="admin-main">
       <div className="section-head admin-heading">
@@ -207,6 +245,40 @@ function AdminSettingsPage() {
           {isSyncing ? "Syncing…" : "Sync items to Stripe"}
         </button>
       </div>
+
+      {/* Order notifications */}
+      <section
+        className="panel"
+        style={{ padding: "18px", maxWidth: "720px", marginBottom: "18px" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
+          <Bell size={18} aria-hidden="true" style={{ color: "#b9823b" }} />
+          <strong>Order notifications</strong>
+        </div>
+        <p className="muted" style={{ fontSize: "0.86rem", margin: "0 0 10px" }}>
+          Every confirmed order emails these addresses. Pickup locations with their own notification
+          email still take precedence for orders at that spot.
+        </p>
+        <textarea
+          rows={2}
+          value={notificationEmails}
+          placeholder="admin@sweettreatslr.com, lauryan0311@gmail.com"
+          onChange={(event) => setNotificationEmails(event.target.value)}
+          style={{ width: "100%" }}
+          aria-label="Order notification email addresses, comma separated"
+        />
+        <div style={{ marginTop: "10px" }}>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={saveNotificationsList}
+            disabled={isSavingNotifications}
+          >
+            <Save size={16} aria-hidden="true" style={{ marginRight: "6px" }} />
+            {isSavingNotifications ? "Saving…" : "Save recipients"}
+          </button>
+        </div>
+      </section>
 
       <section className="panel" style={{ padding: "18px", maxWidth: "720px" }}>
         <div

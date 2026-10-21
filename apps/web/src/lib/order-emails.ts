@@ -3,7 +3,7 @@ import { orders, pickupLocations } from "@sweettreats/db/schema/index";
 import { eq } from "drizzle-orm";
 import { sendAdminOrderEmail, sendCustomerOrderEmail } from "@sweettreats/email";
 import { logger } from "./logger";
-import { adminEmails } from "./auth-server";
+import { getOrderNotificationEmails } from "./notifications";
 import { env } from "@sweettreats/env/server";
 
 function readEnv(key: string): string {
@@ -40,7 +40,7 @@ async function shopNotificationRecipients(
       // Fall through to admin routing.
     }
   }
-  return { to: adminEmails(), routedToLocation: false };
+  return { to: await getOrderNotificationEmails(), routedToLocation: false };
 }
 
 export async function sendOrderNotifications(orderId: string) {

@@ -68,7 +68,7 @@ export const web = Cloudflare.Website.Vite(
         ...(isProd ? { EMAIL_QUEUE: emailQueue } : {}),
         ADMIN_EMAILS: Config.withDefault(
           Config.String("ADMIN_EMAILS"),
-          "lauryan0311@gmail.com,admin@sweettreatslr.com,stlr@demo.com,cg@rocktownlabs.com",
+          "lauryan0311@gmail.com,admin@sweettreatslr.com,cg@rocktownlabs.com",
         ),
         BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
         BETTER_AUTH_URL: Config.withDefault(

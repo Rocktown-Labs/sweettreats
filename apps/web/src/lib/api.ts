@@ -17,7 +17,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 
-import { currentUserEmail, requireAdmin } from "./auth-server";
+import { currentUserEmail, requireAdmin, adminEmails } from "./auth-server";
 import { createOrderToken, verifyOrderToken } from "./order-token";
 import { releaseReservedLines } from "./inventory";
 import { clientIpFromHeaders, rateLimit } from "./rate-limit";
@@ -41,6 +41,7 @@ import {
 } from "./stripe-client";
 import { INTEGRATION_KEY_IDS, integrationKeyStatus, storeIntegrationKey } from "./secure-settings";
 import { shippoClientFor } from "./shipping";
+import { getOrderNotificationEmails, saveOrderNotificationEmails } from "./notifications";
 import { enqueueEmail, queueSend } from "./outbox";
 import { logger } from "./logger";
 
@@ -1775,6 +1776,38 @@ export const saveIntegrationKeys = createServerFn({ method: "POST" })
     });
 
     return { ok: true, stripeSynced };
+  });
+
+const saveNotificationEmailsSchema = z.object({
+  emails: z
+    .array(z.string().email("Enter valid email addresses."))
+    .min(1, "At least one recipient is required.")
+    .max(10, "Up to 10 recipients."),
+});
+
+export const getNotificationSettings = createServerFn({ method: "GET" }).handler(async () => {
+  await requireAdmin();
+  const emails = await getOrderNotificationEmails();
+  const roster = adminEmails();
+  return { emails, fallbackRoster: roster };
+});
+
+export const saveNotificationEmails = createServerFn({ method: "POST" })
+  .validator((data: unknown) => saveNotificationEmailsSchema.parse(data))
+  .handler(async ({ data }) => {
+    await requireAdmin();
+    const db = dbRequired();
+    const { getRequestHeaders } = await import("@tanstack/react-start/server");
+    const ip = clientIpFromHeaders(getRequestHeaders());
+    const limit = await rateLimit(db, "save-notification-emails", ip, 60 * 10, 20);
+    if (!limit.ok) {
+      throw new Error("Too many save attempts. Wait a few minutes and try again.");
+    }
+
+    const emails = data.emails.map((email) => email.trim().toLowerCase());
+    await saveOrderNotificationEmails(emails);
+    logger.info("admin.notification_emails_saved", { count: emails.length });
+    return { ok: true, emails };
   });
 
 export const getAdminOrder = createServerFn({ method: "GET" })
