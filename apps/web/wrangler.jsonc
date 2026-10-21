@@ -17,7 +17,7 @@
     "enabled": true,
   },
   "vars": {
-    "ADMIN_EMAILS": "lauryan0311@gmail.com,admin@sweettreatslr.com,cg@rocktownlabs.com",
+    "ADMIN_EMAILS": "lauryan0311@gmail.com,admin@sweettreatslr.com",
     "BETTER_AUTH_URL": "http://localhost:8787",
   },
   "d1_databases": [
