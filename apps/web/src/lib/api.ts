@@ -1833,6 +1833,10 @@ export const getSetupStatus = createServerFn({ method: "GET" }).handler(async ()
   const unweightedCount = shippableItems.filter(
     (item) => !item.weightOunces || item.weightOunces <= 0,
   ).length;
+  // The dev seeds every item at 2 oz — if they're all still exactly 2,
+  // they're placeholder weights the owner needs to replace with real ones.
+  const allWeightsSeeded =
+    shippableItems.length > 0 && shippableItems.every((item) => item.weightOunces === 2);
 
   const locations = await db
     .select({ address: pickupLocations.address })
@@ -1859,6 +1863,7 @@ export const getSetupStatus = createServerFn({ method: "GET" }).handler(async ()
         }
       : null,
     unweightedCount,
+    allWeightsSeeded,
     locationExample: locations[0]?.address ?? "",
     locationsConfigured,
     stripeMode: stripeKey

@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
-import { CheckCircle2, Circle, KeyRound, MapPin, Scale, Store, X } from "lucide-react";
+import { CheckCircle2, Circle, Eye, KeyRound, MapPin, Scale, Store, X } from "lucide-react";
 
 import { getSetupStatus } from "../lib/api";
 import { authClient } from "../lib/auth-client";
@@ -10,12 +10,20 @@ import { authClient } from "../lib/auth-client";
  * Setup wizard on the admin Overview — a dismissible checklist that guides
  * the shop owner through first-time configuration.
  *
- * Dismissal is per-user (localStorage keyed by email): the developer skips
- * it once and never sees it again; the owner works through it until every
- * step auto-detects as done, at which point the card disappears entirely.
+ * Three step states:
+ *   ✓ done    — genuinely auto-detected (live keys, real addresses)
+ *   ◐ review  — something's set, but it's placeholder data the owner needs
+ *               to verify or replace (dev-seeded address/weights)
+ *   ○ pending — nothing configured at all
  *
- * Each step shows real data context — not just "pending vs done" but what
- * the current value is, so the owner knows exactly what to change.
+ * Address and weight steps intentionally never auto-green — the app can't
+ * distinguish "the owner confirmed this" from "the dev seeded a placeholder."
+ * They show as amber "verify" with the current values visible so the owner
+ * can see at a glance that the address says "Searcy" and needs to be the
+ * real bakery. The wizard stays until dismissed or all steps are green.
+ *
+ * Per-user dismissal (localStorage keyed by email): the developer clicks
+ * "Skip" once; the owner works through it.
  */
 
 const DISMISS_KEY = "sweet-treats-admin-setup-dismissed";
@@ -23,17 +31,20 @@ const DISMISS_KEY = "sweet-treats-admin-setup-dismissed";
 type SetupStatus = {
   shipFromAddress: { street1: string; city: string; state: string } | null;
   unweightedCount: number;
+  allWeightsSeeded: boolean;
   locationExample: string;
   locationsConfigured: boolean;
   stripeMode: "test" | "live" | null;
   shippoMode: "test" | "live" | null;
 };
 
+type StepState = "done" | "review" | "pending";
+
 type Step = {
   icon: React.ReactNode;
   title: string;
   description: string;
-  done: boolean;
+  state: StepState;
   statusText: string;
   to: string;
 };
@@ -48,7 +59,8 @@ function buildSteps(status: SetupStatus): Step[] {
       title: "Set your bakery's address",
       description:
         "Where orders ship from. A wrong address means wrong shipping quotes at checkout.",
-      done: Boolean(status.shipFromAddress),
+      // Never auto-detect as done — the owner must confirm this is right.
+      state: status.shipFromAddress ? "review" : "pending",
       statusText: status.shipFromAddress
         ? `Currently: ${status.shipFromAddress.street1}, ${status.shipFromAddress.city}, ${status.shipFromAddress.state} — update if this isn't your real bakery`
         : "Not set — shipping quotes will fail",
@@ -59,11 +71,15 @@ function buildSteps(status: SetupStatus): Step[] {
       title: "Weigh your cookies",
       description:
         "Weigh 3 cookies together, divide by 3, and enter that average as each item's weight. Powers shipping rates.",
-      done: status.unweightedCount === 0,
+      // Never auto-detect as done — seeded weights are placeholder until
+      // the owner enters real measurements.
+      state: status.unweightedCount === 0 ? "review" : "pending",
       statusText:
-        status.unweightedCount === 0
-          ? "All items have weights"
-          : `${status.unweightedCount} item${status.unweightedCount === 1 ? "" : "s"} still need a weight`,
+        status.unweightedCount > 0
+          ? `${status.unweightedCount} item${status.unweightedCount === 1 ? "" : "s"} still need${status.unweightedCount === 1 ? "s" : ""} a weight`
+          : status.allWeightsSeeded
+            ? "All items have placeholder weights — verify by weighing 3 and dividing by 3"
+            : "All items have weights — verify they're accurate",
       to: "/admin/items",
     },
     {
@@ -71,11 +87,11 @@ function buildSteps(status: SetupStatus): Step[] {
       title: "Add real pickup addresses",
       description:
         "Give each pickup location a street address customers can find. Replace any placeholder descriptions.",
-      done: status.locationsConfigured,
+      state: status.locationsConfigured ? "done" : "review",
       statusText: status.locationsConfigured
-        ? "All locations have real addresses"
+        ? "✓ All locations have real addresses"
         : status.locationExample
-          ? `Example: "${status.locationExample}" — looks like a placeholder`
+          ? `"${status.locationExample}" — looks like a placeholder`
           : "No locations yet",
       to: "/admin/locations",
     },
@@ -84,7 +100,7 @@ function buildSteps(status: SetupStatus): Step[] {
       title: "Connect your accounts",
       description:
         "Paste your live Stripe and Shippo keys to accept real payments and ship real orders.",
-      done: stripeLive && shippoLive,
+      state: stripeLive && shippoLive ? "done" : "review",
       statusText: [
         status.stripeMode
           ? `Stripe: ${stripeLive ? "✓ LIVE" : "TEST MODE"}`
@@ -98,13 +114,34 @@ function buildSteps(status: SetupStatus): Step[] {
   ];
 }
 
+function stepStateLabel(state: StepState): string {
+  switch (state) {
+    case "done":
+      return "done";
+    case "review":
+      return "needs your review";
+    case "pending":
+      return "not set";
+  }
+}
+
+function stepStateColor(state: StepState): string {
+  switch (state) {
+    case "done":
+      return "#2e7d32";
+    case "review":
+      return "#d4a017";
+    case "pending":
+      return "#b09878";
+  }
+}
+
 export function SetupWizard() {
   const fetchStatus = useServerFn(getSetupStatus);
   const { data: session } = authClient.useSession();
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [dismissed, setDismissed] = useState<boolean | null>(null);
 
-  // Fetch setup status
   useEffect(() => {
     let cancelled = false;
     fetchStatus()
@@ -119,7 +156,6 @@ export function SetupWizard() {
     };
   }, [fetchStatus]);
 
-  // Check per-user dismissal once we know who's signed in
   useEffect(() => {
     if (!session?.user?.email) return;
     const key = `${DISMISS_KEY}:${session.user.email}`;
@@ -133,15 +169,16 @@ export function SetupWizard() {
     setDismissed(true);
   };
 
-  // Still loading or dismissed → nothing to show
   if (dismissed !== false || !status) {
     return null;
   }
 
   const steps = buildSteps(status);
-  const doneCount = steps.filter((step) => step.done).length;
+  const doneCount = steps.filter((step) => step.state === "done").length;
+  const reviewCount = steps.filter((step) => step.state === "review").length;
 
-  // Everything done → the wizard earns its own disappearance
+  // The wizard earns its disappearance when everything is genuinely done
+  // — but address and weights never auto-green, so the escape is dismissal.
   if (doneCount === steps.length) {
     return null;
   }
@@ -189,7 +226,11 @@ export function SetupWizard() {
               opacity: 0.85,
             }}
           >
-            {doneCount} of {steps.length} steps complete
+            {doneCount === steps.length
+              ? "All done!"
+              : reviewCount > 0
+                ? `${doneCount} done · ${reviewCount} need${reviewCount === 1 ? "s" : ""} your review`
+                : "Let's set things up"}
           </p>
         </div>
         <button
@@ -211,13 +252,21 @@ export function SetupWizard() {
         </button>
       </div>
 
-      {/* Progress bar */}
-      <div style={{ height: "3px", background: "#f1e2cc" }}>
+      {/* Progress bar: green for done, amber for review */}
+      <div style={{ height: "3px", background: "#f1e2cc", display: "flex" }}>
         <div
           style={{
             height: "100%",
             width: `${(doneCount / steps.length) * 100}%`,
-            background: "linear-gradient(90deg, #d8ae6a, #b9823b)",
+            background: "#2e7d32",
+            transition: "width 0.3s ease",
+          }}
+        />
+        <div
+          style={{
+            height: "100%",
+            width: `${(reviewCount / steps.length) * 100}%`,
+            background: "#d4a017",
             transition: "width 0.3s ease",
           }}
         />
@@ -237,33 +286,60 @@ export function SetupWizard() {
               borderBottom: index < steps.length - 1 ? "1px solid #f1e2cc" : "none",
               textDecoration: "none",
               color: "inherit",
-              opacity: step.done ? 0.5 : 1,
             }}
           >
+            {/* Icon + state */}
             <span
               style={{
                 flexShrink: 0,
                 marginTop: "1px",
-                color: step.done ? "#2e7d32" : "#b9823b",
+                color: stepStateColor(step.state),
               }}
             >
-              {step.done ? (
+              {step.state === "done" ? (
                 <CheckCircle2 size={18} aria-hidden="true" />
+              ) : step.state === "review" ? (
+                <Eye size={18} aria-hidden="true" />
               ) : (
-                <Circle size={18} aria-hidden="true" style={{ opacity: 0.4 }} />
+                <Circle size={18} aria-hidden="true" style={{ opacity: 0.35 }} />
               )}
             </span>
 
+            {/* Content */}
             <span style={{ flex: 1, minWidth: 0 }}>
               <span
                 style={{
-                  display: "block",
-                  fontWeight: 600,
-                  fontSize: "0.9rem",
-                  color: "#241408",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
                 }}
               >
-                {step.title}
+                <span
+                  style={{
+                    fontWeight: 600,
+                    fontSize: "0.9rem",
+                    color: "#241408",
+                  }}
+                >
+                  {step.title}
+                </span>
+                {step.state !== "done" && (
+                  <span
+                    style={{
+                      fontSize: "0.68rem",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      fontWeight: 600,
+                      color: stepStateColor(step.state),
+                      background: `${stepStateColor(step.state)}18`,
+                      padding: "1px 8px",
+                      borderRadius: "999px",
+                      border: `1px solid ${stepStateColor(step.state)}33`,
+                    }}
+                  >
+                    {stepStateLabel(step.state)}
+                  </span>
+                )}
               </span>
               <span
                 style={{
@@ -280,17 +356,17 @@ export function SetupWizard() {
                 style={{
                   display: "block",
                   fontSize: "0.76rem",
-                  color: step.done ? "#2e7d32" : "#c0392b",
+                  color: stepStateColor(step.state),
                   marginTop: "4px",
                   fontWeight: 500,
                 }}
               >
-                {step.done ? "✓ " : step.statusText ? "" : "○ "}
+                {step.state === "done" ? "✓ " : ""}
                 {step.statusText}
               </span>
             </span>
 
-            {!step.done && (
+            {step.state !== "done" && (
               <span
                 style={{
                   flexShrink: 0,
@@ -300,7 +376,7 @@ export function SetupWizard() {
                   marginTop: "4px",
                 }}
               >
-                Go →
+                {step.state === "review" ? "Verify →" : "Go →"}
               </span>
             )}
           </Link>
