@@ -23,10 +23,13 @@ import { releaseReservedLines } from "./inventory";
 import { clientIpFromHeaders, rateLimit } from "./rate-limit";
 import { PICKUP_WINDOW_DAYS, addDaysIso, isPickupSlotBookable, shopDateIso } from "./pickup";
 import {
+  computeOrderWeight,
+  createShippoShipment,
   derivePackStock,
   ensureShippingServiceGroup,
   getShippingSettings,
   loadPackContentsByPackIds,
+  purchaseShippoLabel,
   quoteShippingRates,
   resolveShippingOption,
   saveShippingSettings,
@@ -1406,7 +1409,8 @@ export const getShippingOptions = createServerFn({ method: "POST" })
 
     return {
       configured: true,
-      options: result.options,
+      // Cheapest first — customers shouldn't have to hunt for the best deal.
+      options: [...result.options].sort((a, b) => a.amountCents - b.amountCents),
       totalOunces: result.totalOunces,
       handlingFeeCents: settings.handlingFeeCents,
     };
@@ -1516,7 +1520,8 @@ export const getAdminShippingRatePreview = createServerFn({ method: "POST" })
 
     return {
       configured: true,
-      options: result.options,
+      // Cheapest first — customers shouldn't have to hunt for the best deal.
+      options: [...result.options].sort((a, b) => a.amountCents - b.amountCents),
       totalOunces: result.totalOunces,
       handlingFeeCents: settings.handlingFeeCents,
     };
@@ -1878,6 +1883,148 @@ export const getSetupStatus = createServerFn({ method: "GET" }).handler(async ()
       : null,
   };
 });
+
+/* ------------------------------------------------------------------ */
+/* Shipping labels (phase 3)                                           */
+/* ------------------------------------------------------------------ */
+
+/** Get available shipping rates for a specific order, cheapest first. */
+export const getShippingRatesForOrder = createServerFn({ method: "GET" })
+  .validator((id: string) => id)
+  .handler(async ({ data: orderId }) => {
+    await requireAdmin();
+    const db = dbRequired();
+
+    const order = await db.query.orders.findFirst({
+      where: eq(orders.id, orderId),
+    });
+    if (!order) throw new Error("Order not found.");
+    if (order.fulfillmentType !== "shipping") {
+      throw new Error("This is a pickup order — no label needed.");
+    }
+    if (order.shippoTransactionId) {
+      throw new Error("A label was already purchased for this order.");
+    }
+
+    const settings = await getShippingSettings();
+    if (!settings.fromAddress) {
+      throw new Error("Set the shop's ship-from address first (Admin → Shipping).");
+    }
+
+    const weightOunces = await computeOrderWeight(orderId);
+    if (weightOunces <= 0) {
+      throw new Error("Order has no shipping weight — check the item weights.");
+    }
+
+    const result = await createShippoShipment({
+      fromAddress: settings.fromAddress,
+      toAddress: {
+        name: order.shippingName,
+        street1: order.shippingLine1,
+        street2: order.shippingLine2,
+        city: order.shippingCity,
+        state: order.shippingState,
+        zip: order.shippingZip,
+        country: order.shippingCountry,
+      },
+      weightOunces,
+      box: settings.box,
+    });
+
+    logger.info("shipping.rates_fetched", {
+      orderId,
+      shipmentId: result.shipmentId,
+      rateCount: result.rates.length,
+    });
+
+    return {
+      shipmentId: result.shipmentId,
+      weightOunces,
+      rates: result.rates,
+    };
+  });
+
+const purchaseLabelSchema = z.object({
+  orderId: z.string().min(1),
+  rateId: z.string().min(1),
+});
+
+/**
+ * Purchase a shipping label for a confirmed order. The DB guard on
+ * shippoTransactionId makes this idempotent: two admins clicking
+ * simultaneously can only produce one purchased label.
+ */
+export const purchaseShippingLabel = createServerFn({ method: "POST" })
+  .validator((data: unknown) => purchaseLabelSchema.parse(data))
+  .handler(async ({ data }) => {
+    await requireAdmin();
+    const db = dbRequired();
+
+    // Idempotency guard: claim the label slot before purchasing.
+    const claimed = await db
+      .update(orders)
+      .set({
+        shippoTransactionId: `pending:${crypto.randomUUID()}`,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(and(eq(orders.id, data.orderId), sql`${orders.shippoTransactionId} IS NULL`))
+      .returning({ id: orders.id });
+
+    if (claimed.length === 0) {
+      throw new Error("A label was already purchased (or is being purchased) for this order.");
+    }
+
+    try {
+      const label = await purchaseShippoLabel({ rateId: data.rateId });
+
+      await db
+        .update(orders)
+        .set({
+          shippoTransactionId: label.transactionId,
+          trackingNumber: label.trackingNumber,
+          trackingUrl: label.trackingUrl,
+          labelUrl: label.labelUrl,
+          shippingStatus: "label_created",
+          status: "preparing",
+          updatedAt: sql`CURRENT_TIMESTAMP`,
+        })
+        .where(eq(orders.id, data.orderId));
+
+      // "Your order has shipped" email via the outbox.
+      const outboxId = crypto.randomUUID();
+      await db
+        .insert(emailOutboxTable)
+        .values({
+          id: outboxId,
+          event: "order.shipped",
+          payload: JSON.stringify({ orderId: data.orderId }),
+        })
+        .catch(() => {});
+      await queueSend({ outboxId }).catch(() => {});
+
+      logger.info("shipping.label_purchased", {
+        orderId: data.orderId,
+        trackingNumber: label.trackingNumber,
+        provider: label.provider,
+        serviceLevelName: label.serviceLevelName,
+        amount: label.amount,
+      });
+
+      return {
+        trackingNumber: label.trackingNumber,
+        trackingUrl: label.trackingUrl,
+        labelUrl: label.labelUrl,
+      };
+    } catch (caught) {
+      // Purchase failed — release the claim so the admin can retry.
+      await db
+        .update(orders)
+        .set({ shippoTransactionId: null, updatedAt: sql`CURRENT_TIMESTAMP` })
+        .where(eq(orders.id, data.orderId))
+        .catch(() => {});
+      throw caught;
+    }
+  });
 
 export const getAdminOrder = createServerFn({ method: "GET" })
   .validator((id: string) => id)

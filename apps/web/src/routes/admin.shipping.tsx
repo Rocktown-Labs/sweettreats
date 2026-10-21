@@ -133,7 +133,7 @@ function AdminShippingPage() {
         setQuoteError("Shippo isn't configured (missing SHIPPO_API_KEY).");
         return;
       }
-      setRates(result.options);
+      setRates([...result.options].sort((a, b) => a.amountCents - b.amountCents));
       setQuotedWeight(result.totalOunces);
       setQuotedAt(new Date().toLocaleTimeString());
       if (result.options.length === 0) {

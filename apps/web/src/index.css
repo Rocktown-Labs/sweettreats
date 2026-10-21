@@ -1898,3 +1898,232 @@ button,
   padding: 8px 12px;
   border-radius: 6px;
 }
+
+/* ================================================================== */
+/* Multi-step Checkout Styles                                         */
+/* ================================================================== */
+
+.checkout-stepper {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.step-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  border: 1.5px solid transparent;
+  background: transparent;
+  color: #8c6f4a;
+  cursor: default;
+  transition: all 160ms ease;
+}
+
+.step-pill.completed {
+  background: #fff0d4;
+  color: #241408;
+  cursor: pointer;
+  border-color: #ead8bf;
+}
+
+.step-pill.completed:hover {
+  background: #ffe6be;
+}
+
+.step-pill.active {
+  background: #241408;
+  color: #fff8e7;
+  border-color: #241408;
+}
+
+.step-pill .step-num {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.step-pill.active .step-num {
+  background: #f6c453;
+  color: #241408;
+  font-weight: 800;
+}
+
+.step-pill.completed .step-num {
+  background: #241408;
+  color: #fff8e7;
+}
+
+.step-arrow {
+  color: #d8ae6a;
+}
+
+.checkout-summary-card {
+  border: 1.5px solid #d8ae6a;
+  background: #fffcf4;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  display: grid;
+  gap: 12px;
+}
+
+.checkout-summary-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.checkout-summary-label {
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 800;
+  color: #8c6f4a;
+  margin-bottom: 2px;
+}
+
+.checkout-summary-val {
+  font-weight: 600;
+  color: #1b0f08;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.shipping-options-list {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.shipping-option-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1.5px solid #ead8bf;
+  background: #fffef8;
+  cursor: pointer;
+  transition: all 160ms ease;
+}
+
+.shipping-option-card:hover {
+  border-color: #b9823b;
+  background: #fffdf5;
+}
+
+.shipping-option-card.selected {
+  border: 2px solid #241408;
+  background: #fffdf2;
+  box-shadow: 2px 2px 0 #241408;
+}
+
+.shipping-badge-cheapest {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #e1f5e2;
+  color: #1e6d2b;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.shipping-badge-fastest {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #e3effc;
+  color: #1a569c;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.shipping-skeleton-card {
+  min-height: 68px;
+  border-radius: 8px;
+  border: 1.5px dashed #d8ae6a;
+  background: rgba(216, 174, 106, 0.1);
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  gap: 12px;
+}
+
+.method-picker-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.method-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1.5px solid #ead8bf;
+  background: #fffef8;
+  cursor: pointer;
+  text-align: left;
+  transition: all 160ms ease;
+}
+
+.method-card:hover:not(:disabled) {
+  border-color: #b9823b;
+}
+
+.method-card.selected {
+  border: 2px solid #241408;
+  background: #241408;
+  color: #fff8e7;
+  box-shadow: 2px 2px 0 #2a160d;
+}
+
+.method-card:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.address-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  margin-top: 6px;
+}
+
+.address-status-pill.ready {
+  background: #e1f5e2;
+  color: #1e6d2b;
+}
+
+.address-status-pill.quoting {
+  background: #fff2cc;
+  color: #7a5000;
+}
+
+@media (max-width: 600px) {
+  .method-picker-grid {
+    grid-template-columns: 1fr;
+  }
+}

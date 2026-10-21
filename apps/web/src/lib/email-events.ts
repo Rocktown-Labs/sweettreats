@@ -88,6 +88,15 @@ export async function handleOutboxEvent(
       return;
     }
 
+    case "order.shipped": {
+      const orderId = String(payload.orderId ?? "");
+      if (!orderId) {
+        throw new Error("order.shipped payload missing orderId");
+      }
+      await sendOrderNotifications(orderId); // reuses the same email pipeline for now
+      return;
+    }
+
     default:
       logger.warn("outbox.unknown_event", { event });
   }

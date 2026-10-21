@@ -1,6 +1,6 @@
 import { Shippo } from "shippo";
 import { createDb } from "@sweettreats/db";
-import { menuItems, packContents, shopSettings } from "@sweettreats/db/schema/index";
+import { menuItems, orderItems, packContents, shopSettings } from "@sweettreats/db/schema/index";
 import { eq, inArray, sql } from "drizzle-orm";
 
 import { logger } from "./logger";
@@ -111,6 +111,198 @@ async function getShippoClient(): Promise<Shippo | null> {
 /** Validating constructor used by the sheet save flow — never cached. */
 export function shippoClientFor(key: string): Shippo {
   return new Shippo({ apiKeyHeader: key });
+}
+
+/* ------------------------------------------------------------------ */
+/* Raw Shippo API (shipments + label purchase)                          */
+/* ------------------------------------------------------------------ */
+
+async function shippoResolveKey(): Promise<string> {
+  return resolveIntegrationKey(INTEGRATION_KEY_IDS.shippoApi);
+}
+
+/** Create a Shippo shipment and get available rates. */
+export async function createShippoShipment(input: {
+  fromAddress: ShippingFromAddress;
+  toAddress: {
+    name: string;
+    street1: string;
+    street2?: string;
+    city: string;
+    state: string;
+    zip: string;
+    country?: string;
+  };
+  weightOunces: number;
+  box: { lengthIn: number; widthIn: number; heightIn: number };
+}): Promise<{
+  shipmentId: string;
+  rates: {
+    objectId: string;
+    amount: string;
+    provider: string;
+    serviceLevelName: string;
+    estimatedDays: number | null;
+  }[];
+}> {
+  const key = await shippoResolveKey();
+  if (!key) throw new Error("Shippo is not configured.");
+
+  const response = await fetch("https://api.goshippo.com/shipments", {
+    method: "POST",
+    headers: { Authorization: `ShippoToken ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      address_from: {
+        name: input.fromAddress.name,
+        street1: input.fromAddress.street1,
+        street2: input.fromAddress.street2 || "",
+        city: input.fromAddress.city,
+        state: input.fromAddress.state,
+        zip: input.fromAddress.zip,
+        country: input.fromAddress.country || "US",
+      },
+      address_to: {
+        name: input.toAddress.name,
+        street1: input.toAddress.street1,
+        street2: input.toAddress.street2 || "",
+        city: input.toAddress.city,
+        state: input.toAddress.state,
+        zip: input.toAddress.zip,
+        country: input.toAddress.country || "US",
+      },
+      parcels: [
+        {
+          mass_unit: "oz",
+          weight: String(input.weightOunces),
+          distance_unit: "in",
+          length: String(input.box.lengthIn),
+          width: String(input.box.widthIn),
+          height: String(input.box.heightIn),
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Shippo shipment failed (${response.status}): ${body.slice(0, 300)}`);
+  }
+
+  const shipment = (await response.json()) as {
+    object_id: string;
+    rates: Array<{
+      object_id: string;
+      amount: string;
+      amount_local: string;
+      provider: string;
+      servicelevel: { name: string };
+      days: number | null;
+      duration_terms: string;
+    }>;
+  };
+
+  // Sort cheapest first — the admin's default is "show me the best deal."
+  const rates = (shipment.rates || [])
+    .map((rate) => ({
+      objectId: rate.object_id,
+      amount: rate.amount || rate.amount_local || "0",
+      provider: rate.provider,
+      serviceLevelName: rate.servicelevel?.name || rate.provider,
+      estimatedDays: rate.days,
+    }))
+    .sort((a, b) => Number(a.amount) - Number(b.amount));
+
+  return { shipmentId: shipment.object_id, rates };
+}
+
+/** Purchase a shipping label for a specific rate. */
+export async function purchaseShippoLabel(input: { rateId: string }): Promise<{
+  transactionId: string;
+  trackingNumber: string;
+  trackingUrl: string;
+  labelUrl: string;
+  amount: string;
+  provider: string;
+  serviceLevelName: string;
+}> {
+  const key = await shippoResolveKey();
+  if (!key) throw new Error("Shippo is not configured.");
+
+  const response = await fetch("https://api.goshippo.com/transactions", {
+    method: "POST",
+    headers: { Authorization: `ShippoToken ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      rate: input.rateId,
+      label_file_type: "PDF",
+      async: false,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Label purchase failed (${response.status}): ${body.slice(0, 300)}`);
+  }
+
+  const transaction = (await response.json()) as {
+    object_id: string;
+    status: string;
+    label_url: string;
+    tracking_number: string;
+    tracking_url: string;
+    rate: { amount: string; provider: string; servicelevel: { name: string } };
+  };
+
+  if (transaction.status !== "SUCCESS" && transaction.status !== "QUEUED") {
+    throw new Error(`Label purchase status: ${transaction.status}`);
+  }
+
+  return {
+    transactionId: transaction.object_id,
+    trackingNumber: transaction.tracking_number,
+    trackingUrl: transaction.tracking_url,
+    labelUrl: transaction.label_url,
+    amount: transaction.rate?.amount ?? "0",
+    provider: transaction.rate?.provider ?? "",
+    serviceLevelName: transaction.rate?.servicelevel?.name ?? "",
+  };
+}
+
+/** Compute the shipment weight for an existing order (from current item data). */
+export async function computeOrderWeight(orderId: string): Promise<number> {
+  const db = createDb();
+  const rows = await db
+    .select({ menuItemId: orderItems.menuItemId, quantity: orderItems.quantity })
+    .from(orderItems)
+    .where(eq(orderItems.orderId, orderId));
+
+  const itemIds = [...new Set(rows.map((row) => row.menuItemId).filter(Boolean))] as string[];
+  if (itemIds.length === 0) return 0;
+
+  const items = await db.select().from(menuItems).where(inArray(menuItems.id, itemIds));
+  const byId = new Map(items.map((item) => [item.id, item]));
+
+  const packIds = items.filter((item) => item.packSize).map((item) => item.id);
+  const contentsByPackId = await loadPackContentsByPackIds(db, packIds);
+
+  let totalOunces = 0;
+  for (const row of rows) {
+    if (!row.menuItemId) continue;
+    const item = byId.get(row.menuItemId);
+    if (!item || !item.isShippable) continue;
+
+    if (item.packSize) {
+      const contents = contentsByPackId.get(item.id) ?? [];
+      let packOunces = item.packTareOunces;
+      for (const content of contents) {
+        packOunces += unitWeightOunces(content.cookie ?? item) * content.quantity;
+      }
+      totalOunces += packOunces * row.quantity;
+    } else {
+      totalOunces += unitWeightOunces(item) * row.quantity;
+    }
+  }
+
+  return Math.ceil(totalOunces);
 }
 
 export async function shippoConfigured(): Promise<boolean> {
