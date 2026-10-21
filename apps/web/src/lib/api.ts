@@ -39,7 +39,12 @@ import {
   getStripeClient,
   stripeClientFor,
 } from "./stripe-client";
-import { INTEGRATION_KEY_IDS, integrationKeyStatus, storeIntegrationKey } from "./secure-settings";
+import {
+  INTEGRATION_KEY_IDS,
+  integrationKeyStatus,
+  resolveIntegrationKey,
+  storeIntegrationKey,
+} from "./secure-settings";
 import { shippoClientFor } from "./shipping";
 import { getOrderNotificationEmails, saveOrderNotificationEmails } from "./notifications";
 import { enqueueEmail, queueSend } from "./outbox";
@@ -1809,6 +1814,65 @@ export const saveNotificationEmails = createServerFn({ method: "POST" })
     logger.info("admin.notification_emails_saved", { count: emails.length });
     return { ok: true, emails };
   });
+
+/**
+ * Real-time setup status for the onboarding wizard on the admin Overview.
+ * Each step auto-detects completion from actual data — the wizard knows
+ * what's a placeholder vs. what's been done.
+ */
+export const getSetupStatus = createServerFn({ method: "GET" }).handler(async () => {
+  await requireAdmin();
+  const db = dbRequired();
+
+  const settings = await getShippingSettings();
+
+  const shippableItems = await db
+    .select({ weightOunces: menuItems.weightOunces })
+    .from(menuItems)
+    .where(eq(menuItems.isShippable, true));
+  const unweightedCount = shippableItems.filter(
+    (item) => !item.weightOunces || item.weightOunces <= 0,
+  ).length;
+
+  const locations = await db
+    .select({ address: pickupLocations.address })
+    .from(pickupLocations)
+    .where(eq(pickupLocations.active, true));
+  // "Real" address heuristic: has a comma-separated structure with a
+  // plausible length — placeholder text like "Downtown Little Rock (River
+  // Market area)" is shorter and vaguer than a street address.
+  const locationsConfigured =
+    locations.length > 0 &&
+    locations.every(
+      (loc) => loc.address.length > 20 && loc.address.includes(",") && !loc.address.includes("("),
+    );
+
+  const stripeKey = await resolveIntegrationKey(INTEGRATION_KEY_IDS.stripeSecret);
+  const shippoKey = await resolveIntegrationKey(INTEGRATION_KEY_IDS.shippoApi);
+
+  return {
+    shipFromAddress: settings.fromAddress
+      ? {
+          street1: settings.fromAddress.street1,
+          city: settings.fromAddress.city,
+          state: settings.fromAddress.state,
+        }
+      : null,
+    unweightedCount,
+    locationExample: locations[0]?.address ?? "",
+    locationsConfigured,
+    stripeMode: stripeKey
+      ? stripeKey.startsWith("sk_live_")
+        ? ("live" as const)
+        : ("test" as const)
+      : null,
+    shippoMode: shippoKey
+      ? shippoKey.startsWith("shippo_live_")
+        ? ("live" as const)
+        : ("test" as const)
+      : null,
+  };
+});
 
 export const getAdminOrder = createServerFn({ method: "GET" })
   .validator((id: string) => id)

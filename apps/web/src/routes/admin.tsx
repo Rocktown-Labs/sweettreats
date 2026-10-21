@@ -2,6 +2,7 @@ import { Link, Outlet, createFileRoute, useRouterState } from "@tanstack/react-r
 import { Package, ShoppingBag, Users } from "lucide-react";
 
 import { AdminShell } from "../components/admin-shell";
+import { SetupWizard } from "../components/setup-wizard";
 import { getAdminDashboard } from "../lib/api";
 import { formatMoney, orderStatusLabel } from "../lib/format";
 
@@ -118,6 +119,9 @@ function AdminPage() {
             <h1 className="page-title">Shop Desk</h1>
           </div>
         </div>
+
+        <SetupWizard />
+
         <div className="admin-metrics">
           <Link to="/admin/orders" className="panel admin-stat-card">
             <ShoppingBag size={20} aria-hidden="true" />
