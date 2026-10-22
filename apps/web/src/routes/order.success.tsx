@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { MapPin } from "lucide-react";
 import { authClient } from "../lib/auth-client";
+import { useCart } from "../lib/cart";
 
 import { getOrder } from "../lib/api";
 import { isCurrentUserAdmin } from "../lib/auth";
@@ -29,11 +30,21 @@ export const Route = createFileRoute("/order/success")({
 
 function SuccessPage() {
   const order = Route.useLoaderData();
+  const cart = useCart();
   const navigate = useNavigate();
   const [seconds, setSeconds] = useState(6);
   const { data: session } = authClient.useSession();
   const checkAdmin = useServerFn(isCurrentUserAdmin);
   const [isAdmin, setIsAdmin] = useState(false);
+
+  // Clear the cart only once a real order is confirmed here. Guard on
+  // lines.length: cart.clear() mints a fresh context object, and this effect
+  // depends on it — without the guard the effect would re-fire forever.
+  useEffect(() => {
+    if (order?.id && cart.lines.length > 0) {
+      cart.clear();
+    }
+  }, [order?.id, cart]);
 
   useEffect(() => {
     if (!session?.user) {

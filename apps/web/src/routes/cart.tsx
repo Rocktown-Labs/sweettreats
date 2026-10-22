@@ -75,7 +75,7 @@ function CartPage() {
             later.
           </p>
           {cart.lines.length > 0 ? (
-            <Link to="/checkout" className="primary-button">
+            <Link to="/checkout" preload="intent" className="primary-button">
               Checkout
             </Link>
           ) : (
