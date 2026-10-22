@@ -15,6 +15,10 @@ const stageScopedName = (base: string) =>
 
 export const database = Cloudflare.D1.Database("database", {
   name: stageScopedName("sweettreats-db"),
+  // Flat copy of packages/db/src/migrations — deliberately NOT the drizzle
+  // source dir. Alchemy hard-fails on drizzle's v0 layout (meta/_journal.json,
+  // DrizzleV0LayoutError); it needs a flat folder of .sql files. The copy is
+  // kept in sync by `db:generate` (scripts/sync-migrations.mjs).
   migrations: "../../packages/db/migrations",
 });
 
