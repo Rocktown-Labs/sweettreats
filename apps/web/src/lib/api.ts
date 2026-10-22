@@ -21,7 +21,14 @@ import { currentUserEmail, requireAdmin, adminEmails } from "./auth-server";
 import { createOrderToken, verifyOrderToken } from "./order-token";
 import { releaseReservedLines } from "./inventory";
 import { clientIpFromHeaders, rateLimit } from "./rate-limit";
-import { PICKUP_WINDOW_DAYS, addDaysIso, isPickupSlotBookable, shopDateIso } from "./pickup";
+import {
+  PICKUP_WINDOW_DAYS,
+  addDaysIso,
+  hasBookableSlots,
+  isPickupSlotBookable,
+  shopDateIso,
+  shopNow,
+} from "./pickup";
 import {
   computeOrderWeight,
   createShippoShipment,
@@ -323,10 +330,16 @@ async function nextAvailableMenu(db: ReturnType<typeof createDb>, startDate = sh
       .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
   };
 
+  const now = shopNow();
   for (let offset = 0; offset < limit; offset += 1) {
     const date = addDaysIso(startDate, offset);
     const day = closedByDate.get(date);
     if (day?.closed) {
+      continue;
+    }
+    // If checking today, verify that same-day ordering hasn't closed (i.e. has bookable slots remaining).
+    // When same-day slots have closed, roll over to the next open day for preorders.
+    if (date === now.date && !hasBookableSlots(date, now)) {
       continue;
     }
     const items = decorate(date);

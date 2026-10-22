@@ -84,6 +84,16 @@ export function isPickupSlotBookable(dateIso: string, time: string, now = shopNo
   return slots.some((slot) => slot.value === time && !slot.disabled);
 }
 
+/** True when the given date still has at least one open bookable slot right now. */
+export function hasBookableSlots(dateIso: string, now = shopNow()): boolean {
+  return pickupSlots(dateIso, now).some((slot) => !slot.disabled);
+}
+
+/** Earliest bookable pickup date: today if any slots are left today, otherwise tomorrow. */
+export function earliestBookableDate(now = shopNow()): string {
+  return hasBookableSlots(now.date, now) ? now.date : addDaysIso(now.date, 1);
+}
+
 export function pickupSlots(dateIso: string, now = shopNow()): PickupSlot[] {
   const slots: PickupSlot[] = [];
   for (
