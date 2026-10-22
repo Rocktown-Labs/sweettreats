@@ -20,6 +20,16 @@
     "ADMIN_EMAILS": "lauryan0311@gmail.com,admin@sweettreatslr.com",
     "BETTER_AUTH_URL": "http://localhost:8787",
   },
+  // wrangler's esbuild bundles ./worker.ts without the TanStack Start vite
+  // plugin, so the plugin-resolved virtuals inside @tanstack/start-server-core
+  // cannot resolve on their own. They are dead code at runtime (fetch is
+  // served by the pre-built dist bundle), so a shared stub module satisfies
+  // the bundler. See workers/tanstack-stubs.js for the full explanation.
+  "alias": {
+    "#tanstack-router-entry": "./workers/tanstack-stubs.js",
+    "#tanstack-start-entry": "./workers/tanstack-stubs.js",
+    "tanstack-start-manifest:v": "./workers/tanstack-stubs.js",
+  },
   "d1_databases": [
     {
       "binding": "DB",
