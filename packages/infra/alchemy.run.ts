@@ -5,6 +5,8 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 
+import type { NotificationCenter } from "../../apps/web/src/realtime/notification-center";
+
 /**
  * Prod keeps the original resource names so existing data/buckets are adopted
  * untouched. Every other stage (PR previews, dev) gets suffixed names so
@@ -67,6 +69,11 @@ export const web = Cloudflare.Website.Vite(
       env: {
         DB: database,
         MEDIA: media,
+        // Realtime admin badge fan-out. The class is exported from the
+        // worker entry; Alchemy derives the class migration automatically.
+        NOTIFICATIONS: Cloudflare.DurableObject<NotificationCenter>("NOTIFICATIONS", {
+          className: "NotificationCenter",
+        }),
         // Producer binding lives on prod only; preview workers enqueue
         // through the cron drain instead of racing prod's single consumer.
         ...(isProd ? { EMAIL_QUEUE: emailQueue } : {}),

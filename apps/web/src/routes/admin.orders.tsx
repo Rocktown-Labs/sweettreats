@@ -1,9 +1,16 @@
 import { Link, Outlet, useRouter, createFileRoute, useRouterState } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { MapPin } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 import { getAdminDashboard, updateOrderStatus } from "../lib/api";
 import { formatMoney, orderStatusLabel } from "../lib/format";
+import {
+  REALTIME_EVENT,
+  lastSeenOrdersCursor,
+  markOrdersSeen,
+} from "../lib/use-admin-notifications";
+import { authClient } from "../lib/auth-client";
 
 export const Route = createFileRoute("/admin/orders")({
   loader: () => getAdminDashboard(),
@@ -12,13 +19,32 @@ export const Route = createFileRoute("/admin/orders")({
 
 function AdminOrdersPage() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const { data: session } = authClient.useSession();
+  const router = useRouter();
   if (pathname !== "/admin/orders") {
     return <Outlet />;
   }
 
   const { recentOrders, statuses } = Route.useLoaderData();
-  const router = useRouter();
   const saveStatus = useServerFn(updateOrderStatus);
+
+  // Capture the seen-cursor BEFORE marking this visit seen, so rows that
+  // arrived since the last visit can wear the "New" pill during it.
+  const seenAtRef = useRef<string | null>(null);
+  useEffect(() => {
+    seenAtRef.current = lastSeenOrdersCursor(session?.user?.email);
+    markOrdersSeen();
+  }, [session?.user?.email]);
+
+  // Realtime pushes (new order, payment, status change) refresh the list in
+  // place while she's looking at it.
+  useEffect(() => {
+    const onRealtime = () => {
+      void router.invalidate();
+    };
+    window.addEventListener(REALTIME_EVENT, onRealtime);
+    return () => window.removeEventListener(REALTIME_EVENT, onRealtime);
+  }, [router]);
 
   return (
     <div className="admin-main">
@@ -41,7 +67,12 @@ function AdminOrdersPage() {
             <article className="admin-list-row order-list-row" key={order.id}>
               <Link to="/admin/orders/$id" params={{ id: order.id }} className="order-list-main">
                 <div className="admin-row-title">
-                  <strong>{order.orderNumber}</strong>
+                  <strong>
+                    {order.orderNumber}
+                    {seenAtRef.current && order.createdAt > seenAtRef.current ? (
+                      <span className="order-new-pill">New</span>
+                    ) : null}
+                  </strong>
                   <span>{formatMoney(order.subtotalCents)}</span>
                 </div>
                 <p style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>

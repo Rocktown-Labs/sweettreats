@@ -199,8 +199,13 @@ export async function currentUserEmail() {
  * Resolve a user's role from the database. A user whose email is in the
  * ADMIN_EMAILS bootstrap list is promoted to admin on their first *verified*
  * sign-in; an explicitly-set role is never overwritten by the bootstrap.
+ * Exported for the realtime WebSocket gate, which authenticates a raw
+ * Request outside server-fn context.
  */
-async function resolveUserRole(userId: string, email: string | null): Promise<string | null> {
+export async function resolveUserRole(
+  userId: string,
+  email: string | null,
+): Promise<string | null> {
   const db = createDb();
   const row = await db.query.user.findFirst({
     where: eq(schema.user.id, userId),

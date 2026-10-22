@@ -7,6 +7,7 @@ import { releaseInventoryForOrder } from "@/lib/inventory";
 import { enqueueEmail } from "@/lib/outbox";
 import { INTEGRATION_KEY_IDS, resolveIntegrationKey } from "@/lib/secure-settings";
 import { logger } from "@/lib/logger";
+import { publishAdminEvent } from "@/realtime/publish";
 
 export const Route = createFileRoute("/api/stripe/webhook")({
   server: {
@@ -123,6 +124,14 @@ export const Route = createFileRoute("/api/stripe/webhook")({
               orderId,
               sessionId: session.id,
             });
+            // Instant admin badge update: payment landed.
+            publishAdminEvent({
+              type: "order.updated",
+              orderId,
+              orderNumber: order.orderNumber,
+              status: "confirmed",
+              paymentStatus: "paid",
+            });
           } else {
             logger.info("stripe.webhook_idempotent_skip", { orderId });
           }
@@ -149,13 +158,20 @@ export const Route = createFileRoute("/api/stripe/webhook")({
               updatedAt: sql`CURRENT_TIMESTAMP`,
             })
             .where(and(eq(orders.id, orderId), eq(orders.status, "pending")))
-            .returning({ id: orders.id });
+            .returning({ id: orders.id, orderNumber: orders.orderNumber });
 
           if (cancelled.length > 0) {
             // Give the reserved stock back so abandoned checkouts can't
             // silently sell the shop out.
             await releaseInventoryForOrder(orderId);
             logger.info("stripe.webhook_order_expired", { orderId });
+            publishAdminEvent({
+              type: "order.updated",
+              orderId,
+              orderNumber: cancelled[0].orderNumber,
+              status: "cancelled",
+              paymentStatus: "abandoned",
+            });
           }
         }
 

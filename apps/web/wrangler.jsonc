@@ -43,4 +43,20 @@
       "bucket_name": "sweettreats-media",
     },
   ],
+  // Realtime admin badge fan-out. Alchemy manages the same class in prod
+  // (see packages/infra/alchemy.run.ts); this is the local-dev twin.
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "NOTIFICATIONS",
+        "class_name": "NotificationCenter",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["NotificationCenter"],
+    },
+  ],
 }

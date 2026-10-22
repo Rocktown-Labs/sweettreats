@@ -15,12 +15,13 @@ import {
 } from "@sweettreats/db/schema/index";
 import { env } from "@sweettreats/env/server";
 import { createServerFn } from "@tanstack/react-start";
-import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { currentUserEmail, requireAdmin, adminEmails } from "./auth-server";
 import { createOrderToken, verifyOrderToken } from "./order-token";
 import { releaseReservedLines } from "./inventory";
+import { publishAdminEvent } from "../realtime/publish";
 import { clientIpFromHeaders, rateLimit } from "./rate-limit";
 import {
   PICKUP_WINDOW_DAYS,
@@ -1563,6 +1564,9 @@ export const createOrder = createServerFn({ method: "POST" })
       // Confirmation emails flow through the outbox + queue (see the batch
       // above and the webhook), never inline — failures retry via cron.
 
+      // Instant admin badge: advisory push; polling re-syncs if it fails.
+      publishAdminEvent({ type: "order.new", orderId, orderNumber });
+
       return { orderId, orderNumber, checkoutUrl, orderToken };
     } catch (caught) {
       try {
@@ -2506,6 +2510,50 @@ export const getAccountOrder = createServerFn({ method: "GET" })
     return order ?? null;
   });
 
+/**
+ * Badge state for the admin notification system: how many orders arrived
+ * after the caller's "last seen" cursor, plus the latest order for the
+ * client's cursor bookkeeping. Timestamps use SQLite CURRENT_TIMESTAMP
+ * format ("YYYY-MM-DD HH:MM:SS", UTC) so the client cursor and created_at
+ * compare as plain strings.
+ */
+export const getAdminNotifications = createServerFn({ method: "GET" })
+  .validator((data: { since?: string }) => data)
+  .handler(async ({ data }) => {
+    await requireAdmin();
+    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    if (!hasDatabase()) {
+      return { count: 0, latestAt: null, latestOrderNumber: "", now };
+    }
+
+    const db = createDb();
+    const since =
+      typeof data.since === "string" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(data.since)
+        ? data.since
+        : "";
+
+    const latest = await db.query.orders.findFirst({
+      orderBy: [desc(orders.createdAt), desc(orders.id)],
+      columns: { orderNumber: true, createdAt: true },
+    });
+
+    let count = 0;
+    if (since) {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(orders)
+        .where(gt(orders.createdAt, since));
+      count = Number(row?.count ?? 0);
+    }
+
+    return {
+      count,
+      latestAt: latest?.createdAt ?? null,
+      latestOrderNumber: latest?.orderNumber ?? "",
+      now,
+    };
+  });
+
 export const getAdminDashboard = createServerFn({ method: "GET" }).handler(async () => {
   await requireAdmin();
   if (!hasDatabase()) {
@@ -2981,10 +3029,20 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     await requireAdmin();
-    await dbRequired()
+    const updated = await dbRequired()
       .update(orders)
       .set({ status: data.status, updatedAt: sql`CURRENT_TIMESTAMP` })
-      .where(eq(orders.id, data.id));
+      .where(eq(orders.id, data.id))
+      .returning({ orderNumber: orders.orderNumber });
     logger.info("admin.order_status_updated", { id: data.id, status: data.status });
+    // Keep other admin tabs live (the actor's own tab already knows).
+    if (updated[0]) {
+      publishAdminEvent({
+        type: "order.updated",
+        orderId: data.id,
+        orderNumber: updated[0].orderNumber,
+        status: data.status,
+      });
+    }
     return { ok: true };
   });

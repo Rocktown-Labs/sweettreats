@@ -26,6 +26,9 @@ import {
 } from "lucide-react";
 import type { CSSProperties, ReactNode } from "react";
 
+import { authClient } from "../lib/auth-client";
+import { useAdminNotifications } from "../lib/use-admin-notifications";
+
 const adminLinks = [
   { to: "/admin", label: "Overview", icon: LayoutDashboard },
   { to: "/admin/items", label: "Items", icon: Package },
@@ -38,6 +41,8 @@ const adminLinks = [
   { to: "/admin/customers", label: "Customers", icon: Users },
 ] as const;
 
+const ORDERS_BADGE_TARGET = "/admin/orders";
+
 function useActivePath() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
 
@@ -45,7 +50,12 @@ function useActivePath() {
     to === "/admin" ? pathname === "/admin" : pathname === to || pathname.startsWith(`${to}/`);
 }
 
-import { authClient } from "../lib/auth-client";
+function NavBadge({ count }: { count: number }) {
+  if (count <= 0) {
+    return null;
+  }
+  return <span className="admin-nav-badge">{count > 9 ? "9+" : count}</span>;
+}
 
 /**
  * Admin chrome. Desktop gets the shadcn sidebar; phones get a native-style bottom tab bar
@@ -54,13 +64,15 @@ import { authClient } from "../lib/auth-client";
 export function AdminShell({ children }: { children: ReactNode }) {
   const { data: session } = authClient.useSession();
   const isDemoSession = session?.user?.email?.toLowerCase() === "stlr@demo.com";
+  // New-order badge: instant push + 20s polling, per useAdminNotifications.
+  const { newOrderCount } = useAdminNotifications();
 
   return (
     <SidebarProvider
       className="page admin-page"
       style={{ "--sidebar-width": "14rem" } as CSSProperties}
     >
-      <AdminSidebar />
+      <AdminSidebar newOrderCount={newOrderCount} />
       <main className="admin-content">
         {isDemoSession ? (
           <div
@@ -100,12 +112,12 @@ export function AdminShell({ children }: { children: ReactNode }) {
         ) : null}
         {children}
       </main>
-      <AdminTabBar />
+      <AdminTabBar newOrderCount={newOrderCount} />
     </SidebarProvider>
   );
 }
 
-function AdminSidebar() {
+function AdminSidebar({ newOrderCount }: { newOrderCount: number }) {
   const isActive = useActivePath();
 
   return (
@@ -126,6 +138,7 @@ function AdminSidebar() {
                   >
                     <Icon aria-hidden="true" />
                     <span>{label}</span>
+                    {to === ORDERS_BADGE_TARGET ? <NavBadge count={newOrderCount} /> : null}
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
@@ -147,7 +160,7 @@ function AdminSidebar() {
   );
 }
 
-function AdminTabBar() {
+function AdminTabBar({ newOrderCount }: { newOrderCount: number }) {
   const isActive = useActivePath();
 
   return (
@@ -164,6 +177,7 @@ function AdminTabBar() {
           >
             <span className="admin-tab-icon">
               <Icon size={22} strokeWidth={active ? 2.4 : 1.9} aria-hidden="true" />
+              {to === ORDERS_BADGE_TARGET ? <NavBadge count={newOrderCount} /> : null}
             </span>
             <span className="admin-tab-label">{label}</span>
           </Link>
