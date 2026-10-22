@@ -1,12 +1,21 @@
-import { Link, Outlet, createFileRoute, useRouterState } from "@tanstack/react-router";
+import { Link, Outlet, createFileRoute, notFound, useRouterState } from "@tanstack/react-router";
 import { Package, ShoppingBag, Users } from "lucide-react";
 
 import { AdminShell } from "../components/admin-shell";
 import { SetupWizard } from "../components/setup-wizard";
 import { getAdminDashboard } from "../lib/api";
+import { isCurrentUserAdmin } from "../lib/auth";
 import { formatMoney, orderStatusLabel } from "../lib/format";
 
 export const Route = createFileRoute("/admin")({
+  // Admin surface stays invisible to non-admins: they get a 404 instead of
+  // an error page. Runs before this route's loader and every admin child's
+  // loader, so anonymous requests never reach the admin-only data calls.
+  beforeLoad: async () => {
+    if (!(await isCurrentUserAdmin())) {
+      throw notFound();
+    }
+  },
   loader: () => getAdminDashboard(),
   component: AdminPage,
   pendingComponent: AdminPending,
