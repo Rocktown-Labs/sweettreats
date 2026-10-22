@@ -64,6 +64,13 @@
       "when": 1792527223267,
       "tag": "0008_orange_roulette",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1792689621321,
+      "tag": "0009_pale_lady_deathstrike",
+      "breakpoints": true
     }
   ]
 }

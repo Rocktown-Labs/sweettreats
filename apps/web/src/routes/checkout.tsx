@@ -14,7 +14,12 @@ import {
 } from "lucide-react";
 
 import { useCart } from "../lib/cart";
-import { createOrder, getPickupAvailability, getShippingOptions } from "../lib/api";
+import {
+  createOrder,
+  getCartLocationAvailability,
+  getPickupAvailability,
+  getShippingOptions,
+} from "../lib/api";
 import { formatMoney } from "../lib/format";
 import { authClient } from "../lib/auth-client";
 import {
@@ -65,6 +70,81 @@ function FieldError({ id, message }: { id: string; message?: string }) {
   ) : null;
 }
 
+type StockCheckState = {
+  configured: boolean;
+  locationName: string;
+  lines: {
+    itemId: string;
+    name: string;
+    requested: number;
+    available: number;
+    tracked: boolean;
+    enough: boolean;
+  }[];
+} | null;
+
+/** Live "does this cart fit at this location's pool?" card for step 2. */
+function StockCheckNotice({
+  loading,
+  availability,
+  issues,
+}: {
+  loading: boolean;
+  availability: StockCheckState;
+  issues: { itemId: string; name: string; requested: number; available: number }[];
+}) {
+  if (loading && !availability) {
+    return (
+      <p
+        className="field-hint"
+        style={{ marginTop: "10px", display: "flex", gap: "6px", alignItems: "center" }}
+      >
+        <RefreshCw size={13} aria-hidden="true" className="animate-spin" />
+        Checking stock…
+      </p>
+    );
+  }
+  if (!availability || !availability.configured) {
+    return null;
+  }
+  if (issues.length === 0) {
+    return (
+      <p
+        className="field-hint"
+        style={{
+          marginTop: "10px",
+          display: "flex",
+          gap: "6px",
+          alignItems: "center",
+          color: "#1d6f28",
+        }}
+      >
+        <Check size={13} aria-hidden="true" />
+        In stock at {availability.locationName}
+      </p>
+    );
+  }
+  return (
+    <div
+      role="alert"
+      style={{
+        marginTop: "12px",
+        padding: "10px 14px",
+        background: "#fdf0ee",
+        border: "1.5px solid #e5b5ae",
+        borderRadius: "10px",
+      }}
+    >
+      {issues.map((issue) => (
+        <p key={issue.itemId} style={{ margin: 0, fontSize: "0.84rem", color: "#7a2e22" }}>
+          {issue.name}: only {issue.available} left at {availability.locationName} (you have{" "}
+          {issue.requested}). Try a different pickup spot or a smaller quantity.
+        </p>
+      ))}
+    </div>
+  );
+}
+
 function CheckoutPage() {
   const pickup = Route.useLoaderData();
   const locations = pickup.locations ?? [];
@@ -73,6 +153,7 @@ function CheckoutPage() {
   const { data: session } = authClient.useSession();
   const submitOrder = useServerFn(createOrder);
   const fetchShippingOptions = useServerFn(getShippingOptions);
+  const checkAvailability = useServerFn(getCartLocationAvailability);
 
   // ── Step state ─────────────────────────────────────────────────────
   const [step, setStep] = useState<Step>(1);
@@ -106,6 +187,29 @@ function CheckoutPage() {
   const [quoteError, setQuoteError] = useState("");
   const lastQuotedKeyRef = useRef("");
   const quoteSeqRef = useRef(0);
+
+  // ── Location availability (step 2) ───────────────────────────────────
+  // One order draws from a single location's pool, so the cart must fit at
+  // the chosen pickup spot (or the shipping source) before Continue.
+  const [availability, setAvailability] = useState<{
+    configured: boolean;
+    locationName: string;
+    lines: {
+      itemId: string;
+      name: string;
+      requested: number;
+      available: number;
+      tracked: boolean;
+      enough: boolean;
+    }[];
+  } | null>(null);
+  const [isCheckingStock, setCheckingStock] = useState(false);
+  const availabilitySeqRef = useRef(0);
+  const availabilityKeyRef = useRef("");
+
+  const availabilityIssues = availability?.lines.filter((line) => !line.enough) ?? [];
+  const availabilityOk =
+    !availability || !availability.configured || availabilityIssues.length === 0;
 
   // ── Errors & submit ───────────────────────────────────────────────────
   const [error, setError] = useState("");
@@ -236,6 +340,44 @@ function CheckoutPage() {
       if (quoteTimerRef.current) clearTimeout(quoteTimerRef.current);
     };
   }, [method, isAddressComplete, currentQuoteKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Debounced stock check for the cart at one location's pool. Advisory in
+  // the UI — createOrder re-validates authoritatively at submit.
+  const stockCheckKey = `${method}:${method === "pickup" ? pickupLocationId : "ship"}:${cart.lines.map((l) => `${l.id}:${l.quantity}`).join(",")}`;
+  const stockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (step !== 2 || cart.lines.length === 0) return;
+    if (stockCheckKey === availabilityKeyRef.current && availability != null) return;
+
+    const seq = ++availabilitySeqRef.current;
+    if (stockTimerRef.current) clearTimeout(stockTimerRef.current);
+    stockTimerRef.current = setTimeout(async () => {
+      setCheckingStock(true);
+      try {
+        const result = await checkAvailability({
+          data: {
+            items: cart.lines.map((l) => ({ id: l.id, quantity: l.quantity })),
+            ...(method === "pickup" ? { locationId: pickupLocationId } : {}),
+          },
+        });
+        if (seq !== availabilitySeqRef.current) return;
+        availabilityKeyRef.current = stockCheckKey;
+        setAvailability(result);
+      } catch {
+        if (seq === availabilitySeqRef.current) {
+          availabilityKeyRef.current = stockCheckKey;
+          setAvailability({ configured: false, locationName: "", lines: [] });
+        }
+      } finally {
+        if (seq === availabilitySeqRef.current) {
+          setCheckingStock(false);
+        }
+      }
+    }, 300);
+    return () => {
+      if (stockTimerRef.current) clearTimeout(stockTimerRef.current);
+    };
+  }, [step, method, pickupLocationId, cart.lines, stockCheckKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Step validation ───────────────────────────────────────────────────
   const validateStep1 = (): FieldErrors => {
@@ -682,6 +824,12 @@ function CheckoutPage() {
                 </div>
               </fieldset>
 
+              <StockCheckNotice
+                loading={isCheckingStock}
+                availability={availability}
+                issues={availabilityIssues}
+              />
+
               <div style={{ display: "flex", gap: "12px", marginTop: "32px" }}>
                 <button type="button" className="secondary-button" onClick={goBack}>
                   <ArrowLeft size={16} aria-hidden="true" />
@@ -690,6 +838,7 @@ function CheckoutPage() {
                   type="button"
                   className="primary-button"
                   onClick={goNext}
+                  disabled={isCheckingStock || !availabilityOk}
                   style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}
                 >
                   Continue
@@ -895,6 +1044,12 @@ function CheckoutPage() {
                 <FieldError id="checkout-shippingRate-error" message={fieldErrors.shippingRate} />
               </div>
 
+              <StockCheckNotice
+                loading={isCheckingStock}
+                availability={availability}
+                issues={availabilityIssues}
+              />
+
               <div style={{ display: "flex", gap: "12px", marginTop: "32px" }}>
                 <button type="button" className="secondary-button" onClick={goBack}>
                   <ArrowLeft size={16} aria-hidden="true" />
@@ -903,7 +1058,9 @@ function CheckoutPage() {
                   type="button"
                   className="primary-button"
                   onClick={goNext}
-                  disabled={method === "shipping" && !selectedRate}
+                  disabled={
+                    (method === "shipping" && !selectedRate) || isCheckingStock || !availabilityOk
+                  }
                   style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}
                 >
                   Continue

@@ -8,6 +8,7 @@ import {
   deleteMenuItem,
   getAdminDashboard,
   getAdminMenuItem,
+  getPickupLocations,
   saveMenuItem,
   uploadMenuPhoto,
 } from "../lib/api";
@@ -59,6 +60,37 @@ function AdminItemDetailPage() {
     (item as { packContents?: { cookieItemId: string; quantity: number }[] } | null)
       ?.packContents ?? [],
   );
+
+  // Per-location stock: each pickup spot has its own pool. The loader provides
+  // rows + locations for existing items; new items fetch the location list.
+  // Inputs are uncontrolled (read from FormData on submit) — state is only
+  // the prefill source.
+  const [stockLocations, setStockLocations] = useState<{ id: string; name: string }[]>(
+    (item as { locations?: { id: string; name: string }[] } | null)?.locations ?? [],
+  );
+  const [stockByLocation] = useState<{ locationId: string; quantity: number }[]>(
+    (item as { stockByLocation?: { locationId: string; quantity: number }[] } | null)
+      ?.stockByLocation ?? [],
+  );
+  const fetchLocations = useServerFn(getPickupLocations);
+  useEffect(() => {
+    if (stockLocations.length > 0) {
+      return;
+    }
+    let cancelled = false;
+    fetchLocations()
+      .then((locations) => {
+        if (!cancelled) {
+          setStockLocations(
+            locations.map((location) => ({ id: location.id, name: location.name })),
+          );
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchLocations, stockLocations.length]);
   const normalizedCategory = item?.category === "Main Cookies" ? "Cookies" : item?.category;
   const categoryOptions = useMemo(
     () =>
@@ -128,6 +160,12 @@ function AdminItemDetailPage() {
               imageKey = uploaded.key;
             }
 
+            // Per-location stock rows (uncontrolled inputs, read on submit).
+            const stockByLocationPayload = stockLocations.map((location) => ({
+              locationId: location.id,
+              quantity: Math.max(0, Math.round(Number(form.get(`stock-${location.id}`) ?? 0) || 0)),
+            }));
+
             const saved = await saveItem({
               data: {
                 id: item?.id,
@@ -138,7 +176,11 @@ function AdminItemDetailPage() {
                 ingredients: String(form.get("ingredients") ?? ""),
                 allergens: String(form.get("allergens") ?? ""),
                 priceCents: Math.round(Number(form.get("price") ?? 0) * 100),
-                inventoryQuantity: Number(form.get("inventoryQuantity") ?? 0),
+                inventoryQuantity:
+                  stockLocations.length > 0
+                    ? stockByLocationPayload.reduce((sum, row) => sum + row.quantity, 0)
+                    : Number(form.get("inventoryQuantity") ?? 0),
+                stockByLocation: stockLocations.length > 0 ? stockByLocationPayload : undefined,
                 trackInventory: true,
                 available: form.get("available") === "on",
                 featured: false,
@@ -228,25 +270,60 @@ function AdminItemDetailPage() {
             </label>
           </div>
           <div className="field-grid">
-            <label className="field">
-              <span>Quantity available</span>
-              <input
-                name="inventoryQuantity"
-                type="number"
-                min="0"
-                defaultValue={item?.inventoryQuantity ?? 0}
-              />
-              {packSizeValue > 0 ? (
-                <small className="field-hint">
-                  Packs with contents ignore this number — stock comes from the cookies inside.
-                </small>
-              ) : null}
-            </label>
+            {stockLocations.length > 0 ? (
+              <>
+                {stockLocations.map((location) => (
+                  <label className="field" key={location.id}>
+                    <span>Stock at {location.name}</span>
+                    <input
+                      name={`stock-${location.id}`}
+                      type="number"
+                      min="0"
+                      defaultValue={
+                        stockByLocation.find((row) => row.locationId === location.id)?.quantity ?? 0
+                      }
+                    />
+                    {packSizeValue > 0 ? (
+                      <small className="field-hint">
+                        Packs with contents ignore this — stock comes from the cookies inside.
+                      </small>
+                    ) : null}
+                  </label>
+                ))}
+                <input
+                  type="hidden"
+                  name="inventoryQuantity"
+                  value={stockByLocation.reduce((sum, row) => sum + row.quantity, 0)}
+                />
+              </>
+            ) : (
+              <label className="field">
+                <span>Quantity available</span>
+                <input
+                  name="inventoryQuantity"
+                  type="number"
+                  min="0"
+                  defaultValue={item?.inventoryQuantity ?? 0}
+                />
+                {packSizeValue > 0 ? (
+                  <small className="field-hint">
+                    Packs with contents ignore this number — stock comes from the cookies inside.
+                  </small>
+                ) : null}
+              </label>
+            )}
             <label className="field">
               <span>Sort order</span>
               <input name="sortOrder" type="number" defaultValue={item?.sortOrder ?? 100} />
             </label>
           </div>
+          {stockLocations.length > 0 ? (
+            <small className="field-hint" style={{ display: "block", marginTop: "-6px" }}>
+              Each spot has its own case. Web orders pull from the chosen pickup location (or the
+              first location for shipped boxes) — count what&apos;s really on the shelf, including
+              in-store sales.
+            </small>
+          ) : null}
           <label className="field">
             <span>Ingredients optional</span>
             <textarea name="ingredients" rows={3} defaultValue={item?.ingredients ?? ""} />

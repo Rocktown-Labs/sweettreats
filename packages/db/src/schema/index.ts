@@ -160,8 +160,58 @@ export const pickupLocations = sqliteTable(
 );
 
 export const pickupLocationsRelations = relations(pickupLocations, ({ many }) => ({
-  orders: many(orders),
+  orders: many(orders, { relationName: "pickupLocation" }),
+  inventoryOrders: many(orders, { relationName: "inventoryLocation" }),
+  inventoryRows: many(menuItemLocationInventory),
 }));
+
+/**
+ * Per-location stock: each pickup location has its own case/pool, and orders
+ * (pickup or shipping) decrement the pool of one location only. In-store sales
+ * decrement the same rows the admin edits. `menu_items.inventory_quantity`
+ * remains as the admin-entered default/aggregate but reservations never touch
+ * it — these rows are the authoritative sellable stock.
+ */
+export const menuItemLocationInventory = sqliteTable(
+  "menu_item_location_inventory",
+  {
+    id: text("id").primaryKey(),
+    menuItemId: text("menu_item_id")
+      .notNull()
+      .references(() => menuItems.id, { onDelete: "cascade" }),
+    pickupLocationId: text("pickup_location_id")
+      .notNull()
+      .references(() => pickupLocations.id, { onDelete: "cascade" }),
+    quantity: integer("quantity").notNull().default(0),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("menu_item_location_inventory_item_location_unique").on(
+      table.menuItemId,
+      table.pickupLocationId,
+    ),
+    index("menu_item_location_inventory_location_idx").on(table.pickupLocationId),
+  ],
+);
+
+export const menuItemLocationInventoryRelations = relations(
+  menuItemLocationInventory,
+  ({ one }) => ({
+    menuItem: one(menuItems, {
+      fields: [menuItemLocationInventory.menuItemId],
+      references: [menuItems.id],
+    }),
+    location: one(pickupLocations, {
+      fields: [menuItemLocationInventory.pickupLocationId],
+      references: [pickupLocations.id],
+    }),
+  }),
+);
 
 export const user = sqliteTable(
   "user",
@@ -238,6 +288,11 @@ export const orders = sqliteTable(
     pickupDate: text("pickup_date").notNull(),
     pickupTime: text("pickup_time").notNull(),
     pickupLocationId: text("pickup_location_id").references(() => pickupLocations.id, {
+      onDelete: "set null",
+    }),
+    /** Which location pool this order's inventory was decremented from. Releases
+     * credit the same pool; null (legacy orders) releases to the global item row. */
+    inventoryLocationId: text("inventory_location_id").references(() => pickupLocations.id, {
       onDelete: "set null",
     }),
     pickupLocationName: text("pickup_location_name").notNull().default(""),
@@ -321,6 +376,7 @@ export const menuItemsRelations = relations(menuItems, ({ many }) => ({
   orderItems: many(orderItems),
   packContents: many(packContents, { relationName: "pack" }),
   insidePacks: many(packContents, { relationName: "cookie" }),
+  locationInventory: many(menuItemLocationInventory),
 }));
 
 export const packContentsRelations = relations(packContents, ({ one }) => ({
@@ -348,6 +404,12 @@ export const ordersRelations = relations(orders, ({ many, one }) => ({
   pickupLocation: one(pickupLocations, {
     fields: [orders.pickupLocationId],
     references: [pickupLocations.id],
+    relationName: "pickupLocation",
+  }),
+  inventoryLocation: one(pickupLocations, {
+    fields: [orders.inventoryLocationId],
+    references: [pickupLocations.id],
+    relationName: "inventoryLocation",
   }),
 }));
 

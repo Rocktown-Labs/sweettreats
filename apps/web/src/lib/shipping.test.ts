@@ -10,7 +10,13 @@ vi.mock("./logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { computeShipmentWeight, derivePackStock, type ShippableItemLite } from "./shipping";
+import {
+  computeShipmentWeight,
+  derivePackStock,
+  projectSellableAcrossLocations,
+  type LocationStockMatrix,
+  type ShippableItemLite,
+} from "./shipping";
 import { parseReservationSnapshot } from "./inventory";
 
 function item(overrides: Partial<ShippableItemLite> & { id?: string }): ShippableItemLite {
@@ -205,5 +211,100 @@ describe("parseReservationSnapshot (release path)", () => {
     expect(parseReservationSnapshot('{"weird":true}')).toBeNull();
     // An empty snapshot means "nothing was reserved" — valid, releases nothing.
     expect(parseReservationSnapshot("[]")).toEqual([]);
+  });
+});
+
+describe("projectSellableAcrossLocations", () => {
+  const locations = ["lr", "nlr"];
+
+  function matrix(entries: Record<string, Record<string, number>>): LocationStockMatrix {
+    const matrix: LocationStockMatrix = new Map();
+    for (const [itemId, byLocation] of Object.entries(entries)) {
+      matrix.set(
+        itemId,
+        new Map(Object.entries(byLocation).map(([locationId, quantity]) => [locationId, quantity])),
+      );
+    }
+    return matrix;
+  }
+
+  it("singles: available when any location has stock, quantity = the best single location", () => {
+    const cookie = item({ id: "choc", trackInventory: true });
+    const stock = projectSellableAcrossLocations(
+      cookie,
+      [],
+      matrix({ choc: { lr: 12, nlr: 4 } }),
+      locations,
+    );
+    // 16 total across pools, but one order can only draw from one pool.
+    expect(stock).toEqual({ available: true, trackInventory: true, inventoryQuantity: 12 });
+  });
+
+  it("singles: sold out everywhere is unavailable", () => {
+    const stock = projectSellableAcrossLocations(
+      item({ id: "choc", trackInventory: true }),
+      [],
+      matrix({ choc: { lr: 0, nlr: 0 } }),
+      locations,
+    );
+    expect(stock.available).toBe(false);
+    expect(stock.inventoryQuantity).toBe(0);
+  });
+
+  it("missing rows count as zero", () => {
+    const stock = projectSellableAcrossLocations(
+      item({ id: "choc", trackInventory: true }),
+      [],
+      new Map(),
+      locations,
+    );
+    expect(stock.available).toBe(false);
+    expect(stock.inventoryQuantity).toBe(0);
+  });
+
+  it("untracked items stay available with no cap", () => {
+    const stock = projectSellableAcrossLocations(
+      item({ id: "cake", trackInventory: false, inventoryQuantity: 0 }),
+      [],
+      new Map(),
+      locations,
+    );
+    expect(stock).toEqual({ available: true, trackInventory: false, inventoryQuantity: 0 });
+  });
+
+  it("packs: count comes from one location's cookies, never mixed across pools", () => {
+    const pack = item({ id: "pack", packSize: 6, trackInventory: false });
+    const choc = item({ id: "choc", trackInventory: true });
+    const contents = [
+      { cookieItemId: "choc", quantity: 3, cookie: choc },
+      { cookieItemId: "straw", quantity: 3, cookie: item({ id: "straw", trackInventory: true }) },
+    ];
+    // LR: 7 choc (⇒ 2 packs) and 4 straw (⇒ 1 pack) → 1 pack at LR.
+    // NLR: 20/20 → 6 packs. Mixing pools would claim 7, one-pool truth is 6.
+    const stock = projectSellableAcrossLocations(
+      pack,
+      contents,
+      matrix({ choc: { lr: 7, nlr: 20 }, straw: { lr: 4, nlr: 20 } }),
+      locations,
+    );
+    expect(stock).toEqual({ available: true, trackInventory: true, inventoryQuantity: 6 });
+  });
+
+  it("packs: a disabled cookie kills the pack everywhere", () => {
+    const pack = item({ id: "pack", packSize: 6 });
+    const stock = projectSellableAcrossLocations(
+      pack,
+      [
+        {
+          cookieItemId: "choc",
+          quantity: 3,
+          cookie: item({ id: "choc", trackInventory: true, available: false }),
+        },
+      ],
+      matrix({ choc: { lr: 10, nlr: 10 } }),
+      locations,
+    );
+    expect(stock.available).toBe(false);
+    expect(stock.inventoryQuantity).toBe(0);
   });
 });

@@ -440,6 +440,89 @@ export function derivePackStock(
 }
 
 /**
+ * Stock matrix: menuItemId -> (locationId -> quantity at that location).
+ * Missing entries simply count as zero at that location.
+ */
+export type LocationStockMatrix = Map<string, Map<string, number>>;
+
+/**
+ * Aggregate sellable projection across every location — what menu pages use.
+ *
+ * Per-location stock is the truth (an order draws from exactly one pool), but
+ * the menu is location-agnostic: an item shows as available when ANY location
+ * can fulfill it, and the exposed `inventoryQuantity` is the largest amount a
+ * single location could fulfill (that's the honest cap for a cart, since one
+ * order can never combine two locations' stock). Packs derive per location by
+ * the same derivePackStock math over that location's cookie stock, then the
+ * best location wins — a pack never mixes cookies from two pools.
+ */
+export function projectSellableAcrossLocations(
+  item: Pick<
+    ShippableItemLite,
+    "id" | "available" | "trackInventory" | "inventoryQuantity" | "packSize"
+  >,
+  contents: PackContentRow[],
+  stockMatrix: LocationStockMatrix,
+  locationIds: string[],
+): { available: boolean; trackInventory: boolean; inventoryQuantity: number } {
+  const stockAt = (cookieItemId: string, locationId: string) =>
+    stockMatrix.get(cookieItemId)?.get(locationId) ?? 0;
+  const ownStockAt = (locationId: string) => stockAt(item.id, locationId);
+
+  // Singles and content-less packs sell from their own rows.
+  if (contents.length === 0) {
+    const quantity = locationIds.reduce(
+      (best, locationId) => Math.max(best, ownStockAt(locationId)),
+      0,
+    );
+    return {
+      available: item.available && (!item.trackInventory || quantity > 0),
+      trackInventory: item.trackInventory,
+      inventoryQuantity: item.trackInventory ? quantity : item.inventoryQuantity,
+    };
+  }
+
+  // Content packs: derive per location, keep the best single-location count.
+  let anyTracked = false;
+  let best = 0;
+  let bestAvailable = false;
+  for (const locationId of locationIds) {
+    const locatedContents = contents.map((content) => ({
+      ...content,
+      cookie: content.cookie
+        ? {
+            ...content.cookie,
+            inventoryQuantity: stockAt(content.cookieItemId, locationId),
+          }
+        : content.cookie,
+    }));
+    const stock = derivePackStock(
+      {
+        available: item.available,
+        trackInventory: item.trackInventory,
+        inventoryQuantity: item.inventoryQuantity,
+      },
+      locatedContents,
+    );
+    if (stock.trackInventory) {
+      anyTracked = true;
+      best = Math.max(best, stock.inventoryQuantity);
+      if (stock.inventoryQuantity > 0) {
+        bestAvailable = true;
+      }
+    } else if (stock.available) {
+      bestAvailable = true;
+    }
+  }
+
+  return {
+    available: item.available && bestAvailable,
+    trackInventory: anyTracked,
+    inventoryQuantity: anyTracked ? best : item.inventoryQuantity,
+  };
+}
+
+/**
  * Compute the shipment weight for a set of cart lines, expanding packs into
  * their contents. Pure over its inputs so it's unit-testable.
  */

@@ -19,7 +19,8 @@ function AdminItemsPage() {
     return <Outlet />;
   }
 
-  const { items } = Route.useLoaderData();
+  const { items, locations } = Route.useLoaderData();
+  const locationNameById = new Map(locations.map((location) => [location.id, location.name]));
   const sorted = [...items].sort((a, b) => {
     if (a.category === "Cookies" && b.category !== "Cookies") {
       return -1;
@@ -88,7 +89,30 @@ function AdminItemsPage() {
               <p className="muted">{item.description}</p>
               <div className="admin-row-meta">
                 <span>{item.category === "Main Cookies" ? "Cookies" : item.category}</span>
-                <span>{item.trackInventory ? `${item.inventoryQuantity} left` : "No count"}</span>
+                {item.trackInventory ? (
+                  item.packSize ? (
+                    <span>from cookies inside</span>
+                  ) : item.stockByLocation && item.stockByLocation.length > 0 ? (
+                    <span>
+                      {item.stockByLocation
+                        .slice()
+                        .sort((a, b) =>
+                          (locationNameById.get(a.locationId) ?? "").localeCompare(
+                            locationNameById.get(b.locationId) ?? "",
+                          ),
+                        )
+                        .map(
+                          (row) =>
+                            `${locationNameById.get(row.locationId) ?? "Unknown"}: ${row.quantity}`,
+                        )
+                        .join(" · ")}
+                    </span>
+                  ) : (
+                    <span>{item.inventoryQuantity} left</span>
+                  )
+                ) : (
+                  <span>No count</span>
+                )}
                 <span>{item.available ? "Visible" : "Hidden"}</span>
               </div>
             </div>

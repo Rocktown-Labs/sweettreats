@@ -1,6 +1,7 @@
 import { createDb } from "@sweettreats/db";
 import {
   dailyMenuItems,
+  menuItemLocationInventory,
   menuItems,
   orderItems,
   orders,
@@ -36,11 +37,13 @@ import {
   ensureShippingServiceGroup,
   getShippingSettings,
   loadPackContentsByPackIds,
+  projectSellableAcrossLocations,
   purchaseShippoLabel,
   quoteShippingRates,
   resolveShippingOption,
   saveShippingSettings,
   shippoConfigured,
+  type LocationStockMatrix,
   type ShippingSettings,
 } from "./shipping";
 import {
@@ -202,6 +205,18 @@ const itemSchema = z.object({
     )
     .max(24)
     .optional(),
+  /** Per-location stock: [{ locationId, quantity }] for every active location.
+   * When present these rows are the item's real sellable stock (the global
+   * inventoryQuantity becomes their sum). */
+  stockByLocation: z
+    .array(
+      z.object({
+        locationId: z.string().min(1),
+        quantity: z.number().int().min(0).max(10_000),
+      }),
+    )
+    .max(24)
+    .optional(),
 });
 
 const uploadSchema = z.object({
@@ -273,40 +288,24 @@ async function nextAvailableMenu(db: ReturnType<typeof createDb>, startDate = sh
   const packIds = itemRows.filter((item) => item.packSize).map((item) => item.id);
   const contentsByPackId = await loadPackContentsByPackIds(db, packIds);
 
+  // Per-location stock: availability aggregates across locations (an item is
+  // sellable when any one location can fulfill it). Two extra queries total.
+  const stockMatrix = await loadStockMatrix(
+    db,
+    itemRows.map((item) => item.id),
+  );
+  const locationIds = await activeLocationIds(db);
+
   const decorate = (menuDate: string) => {
     const base = itemRows.map((item: MenuItemRow) => {
       const daily = dailyByItemDate.get(`${item.id}:${menuDate}`);
       const rowAvailable = daily?.availableOverride ?? item.available;
-      return {
-        ...item,
-        todayNote: daily?.note ?? "",
-        rowAvailable,
-        available: rowAvailable && (!item.trackInventory || item.inventoryQuantity > 0),
-        featured: daily?.featuredOverride ?? item.featured,
-        dailyMenuId: daily?.id ?? null,
-      };
-    });
-
-    // Packs with contents derive their entire stock projection (availability
-    // AND the sellable count) from the cookies inside them via derivePackStock
-    // — the same helper getMenu and order-time checks use, so the homepage
-    // card, menu page, and checkout all agree. The pack row's own inventory
-    // flags never apply to content packs. Daily menu overrides on a cookie
-    // (e.g. "sold out today only") propagate into the pack for this date.
-    const derived = base.map((item) => {
-      if (!item.packSize) {
-        return item;
-      }
-      const contents = contentsByPackId.get(item.id) ?? [];
-      if (contents.length === 0) {
-        return item;
-      }
-      const dateAwareContents = contents.map((content) => {
+      // Daily menu overrides on a cookie (e.g. "sold out today only")
+      // propagate into any pack containing it for this date.
+      const contents = (contentsByPackId.get(item.id) ?? []).map((content) => {
         if (!content.cookie) {
           return content;
         }
-        // availableOverride is null when there's no override for the date,
-        // in which case the cookie's own flag stands.
         const override = dailyByItemDate.get(
           `${content.cookieItemId}:${menuDate}`,
         )?.availableOverride;
@@ -315,16 +314,28 @@ async function nextAvailableMenu(db: ReturnType<typeof createDb>, startDate = sh
           cookie: { ...content.cookie, available: override ?? content.cookie.available },
         };
       });
-      const stock = derivePackStock({ ...item, available: item.rowAvailable }, dateAwareContents);
+      const stock =
+        locationIds.length > 0
+          ? projectSellableAcrossLocations(item, contents, stockMatrix, locationIds)
+          : {
+              // No locations configured yet: fall back to global-row semantics.
+              available: rowAvailable && (!item.trackInventory || item.inventoryQuantity > 0),
+              trackInventory: item.trackInventory,
+              inventoryQuantity: item.inventoryQuantity,
+            };
       return {
         ...item,
-        available: stock.available,
+        todayNote: daily?.note ?? "",
+        rowAvailable,
+        available: rowAvailable && stock.available,
         trackInventory: stock.trackInventory,
         inventoryQuantity: stock.inventoryQuantity,
+        featured: daily?.featuredOverride ?? item.featured,
+        dailyMenuId: daily?.id ?? null,
       };
     });
 
-    return derived
+    return base
       .filter((item) => item.available || item.featured)
       .map(({ rowAvailable: _rowAvailable, ...item }) => item)
       .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
@@ -478,6 +489,14 @@ async function getOrCreatePickupLocations(db: ReturnType<typeof createDb>) {
       // reads never write; renames/data fixes belong in SQL migrations.
       try {
         await db.insert(pickupLocations).values(seedPickupLocations);
+        // Fresh installs get their menu items from migration 0000 with global
+        // quantities but no locations yet, so the 0009 per-location backfill
+        // had nothing to split across. Split each item's global quantity now
+        // — the same policy that migration applies when locations exist.
+        await seedLocationInventoryFromGlobal(
+          db,
+          seedPickupLocations.filter((location) => location.active).map((location) => location.id),
+        );
       } catch {
         // A concurrent first request may have seeded already; fall through.
       }
@@ -488,6 +507,154 @@ async function getOrCreatePickupLocations(db: ReturnType<typeof createDb>) {
   } catch {
     return seedPickupLocations;
   }
+}
+
+/**
+ * Per-location inventory helpers. `menu_item_location_inventory` rows are the
+ * authoritative sellable stock: pickup orders decrement the chosen location's
+ * pool, shipping orders decrement the primary location's pool, and in-store
+ * sales are the admin editing the same rows. The item's global
+ * `inventory_quantity` is only an admin-entered default — never a reservation
+ * source.
+ */
+
+type Db = ReturnType<typeof createDb>;
+
+/** The pool shipping orders draw from: first active location by sort order. */
+async function primaryInventoryLocation(db: Db) {
+  const location = await db.query.pickupLocations.findFirst({
+    where: eq(pickupLocations.active, true),
+    orderBy: [asc(pickupLocations.sortOrder), asc(pickupLocations.id)],
+    columns: { id: true, name: true },
+  });
+  return location ?? null;
+}
+
+/** Stock per item at ONE location. Missing rows count as 0. */
+async function loadLocationStock(
+  db: Db,
+  locationId: string,
+  itemIds: string[],
+): Promise<Map<string, number>> {
+  if (itemIds.length === 0) {
+    return new Map();
+  }
+  const rows = await db
+    .select({
+      menuItemId: menuItemLocationInventory.menuItemId,
+      quantity: menuItemLocationInventory.quantity,
+    })
+    .from(menuItemLocationInventory)
+    .where(
+      and(
+        eq(menuItemLocationInventory.pickupLocationId, locationId),
+        inArray(menuItemLocationInventory.menuItemId, itemIds),
+      ),
+    );
+  return new Map(rows.map((row) => [row.menuItemId, row.quantity]));
+}
+
+/** Stock matrix (itemId -> locationId -> quantity) across ALL locations. */
+async function loadStockMatrix(db: Db, itemIds: string[]): Promise<LocationStockMatrix> {
+  const matrix: LocationStockMatrix = new Map();
+  if (itemIds.length === 0) {
+    return matrix;
+  }
+  const rows = await db
+    .select({
+      menuItemId: menuItemLocationInventory.menuItemId,
+      pickupLocationId: menuItemLocationInventory.pickupLocationId,
+      quantity: menuItemLocationInventory.quantity,
+    })
+    .from(menuItemLocationInventory)
+    .where(inArray(menuItemLocationInventory.menuItemId, itemIds));
+  for (const row of rows) {
+    let byLocation = matrix.get(row.menuItemId);
+    if (!byLocation) {
+      byLocation = new Map();
+      matrix.set(row.menuItemId, byLocation);
+    }
+    byLocation.set(row.pickupLocationId, row.quantity);
+  }
+  return matrix;
+}
+
+/** Ids of the locations menu availability aggregates over (active, sorted). */
+async function activeLocationIds(db: Db): Promise<string[]> {
+  const rows = await db
+    .select({ id: pickupLocations.id })
+    .from(pickupLocations)
+    .where(eq(pickupLocations.active, true))
+    .orderBy(asc(pickupLocations.sortOrder), asc(pickupLocations.id));
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Make sure every menu item has a stock row at this location (new locations
+ * start at 0 — nothing is implicitly sellable somewhere it was never stocked).
+ * Idempotent, safe to call on every location create.
+ */
+async function ensureLocationInventoryRows(db: Db, locationId: string): Promise<void> {
+  await db.run(sql`
+    INSERT INTO menu_item_location_inventory (id, menu_item_id, pickup_location_id, quantity)
+    SELECT m.id || ':' || ${locationId}, m.id, ${locationId}, 0
+    FROM menu_items m
+    WHERE 1
+    ON CONFLICT (menu_item_id, pickup_location_id) DO NOTHING
+  `);
+}
+
+/**
+ * Seed per-location stock for a fresh install by splitting every item's
+ * global quantity across the given locations — the same split the 0009
+ * migration backfill applies when locations already exist.
+ */
+async function seedLocationInventoryFromGlobal(db: Db, locationIds: string[]): Promise<void> {
+  if (locationIds.length === 0) {
+    return;
+  }
+  const items = await db
+    .select({ id: menuItems.id, inventoryQuantity: menuItems.inventoryQuantity })
+    .from(menuItems);
+  for (const item of items) {
+    const split = splitAcrossLocations(item.inventoryQuantity, locationIds);
+    for (const [locationId, quantity] of split) {
+      await db
+        .insert(menuItemLocationInventory)
+        .values({
+          id: `${item.id}:${locationId}`,
+          menuItemId: item.id,
+          pickupLocationId: locationId,
+          quantity,
+          updatedAt: sql`CURRENT_TIMESTAMP`,
+        })
+        .onConflictDoUpdate({
+          target: [
+            menuItemLocationInventory.menuItemId,
+            menuItemLocationInventory.pickupLocationId,
+          ],
+          set: {
+            quantity,
+            updatedAt: sql`CURRENT_TIMESTAMP`,
+          },
+        });
+    }
+  }
+}
+
+/** Split a total quantity across locations the way the migration backfill does:
+ * floor division, with the remainder going to the first location. */
+function splitAcrossLocations(total: number, locationIds: string[]): Map<string, number> {
+  const split = new Map<string, number>();
+  const count = locationIds.length;
+  if (count === 0) {
+    return split;
+  }
+  const base = Math.floor(total / count);
+  locationIds.forEach((locationId, index) => {
+    split.set(locationId, index === 0 ? total - base * (count - 1) : base);
+  });
+  return split;
 }
 
 function hasDatabase() {
@@ -519,24 +686,42 @@ export const getMenu = createServerFn({ method: "GET" }).handler(async () => {
     items.filter((item) => item.packSize).map((item) => item.id),
   );
 
+  // Per-location stock: sellable when any one location can fulfill the order.
+  const [stockMatrix, locationIds] = await Promise.all([
+    loadStockMatrix(
+      db,
+      items.map((item) => item.id),
+    ),
+    activeLocationIds(db),
+  ]);
+
   return items.map((item) => {
-    let available = item.available && (!item.trackInventory || item.inventoryQuantity > 0);
-    let trackInventory = item.trackInventory;
-    let inventoryQuantity = item.inventoryQuantity;
-    if (item.packSize) {
-      const contents = contentsByPackId.get(item.id) ?? [];
-      if (contents.length > 0) {
-        // Populated packs ignore the pack row's own inventory: availability
-        // and the sellable count come from the cookies inside (the row is
-        // never decremented for content packs).
-        const stock = derivePackStock(item, contents);
-        available = stock.available;
-        trackInventory = stock.trackInventory;
-        inventoryQuantity = stock.inventoryQuantity;
-      }
-      // Content-less packs keep row-based semantics.
+    let stock: { available: boolean; trackInventory: boolean; inventoryQuantity: number };
+    if (locationIds.length > 0) {
+      stock = projectSellableAcrossLocations(
+        item,
+        contentsByPackId.get(item.id) ?? [],
+        stockMatrix,
+        locationIds,
+      );
+    } else {
+      // No locations configured yet: fall back to global-row semantics.
+      const packContents = contentsByPackId.get(item.id) ?? [];
+      stock =
+        item.packSize && packContents.length > 0
+          ? derivePackStock(item, packContents)
+          : {
+              available: item.available && (!item.trackInventory || item.inventoryQuantity > 0),
+              trackInventory: item.trackInventory,
+              inventoryQuantity: item.inventoryQuantity,
+            };
     }
-    return publicMenuItem({ ...item, available, trackInventory, inventoryQuantity });
+    return publicMenuItem({
+      ...item,
+      available: item.available && stock.available,
+      trackInventory: stock.trackInventory,
+      inventoryQuantity: stock.inventoryQuantity,
+    });
   });
 });
 
@@ -665,6 +850,9 @@ export const savePickupLocation = createServerFn({ method: "POST" })
       logger.info("admin.pickup_location_updated", { id, name: data.name });
     } else {
       await db.insert(pickupLocations).values({ id, ...values });
+      // New locations start with empty stock rows for every item — the
+      // admin then sets real counts per location in the item editor.
+      await ensureLocationInventoryRows(db, id);
       logger.info("admin.pickup_location_created", { id, name: data.name });
     }
 
@@ -701,19 +889,31 @@ export const getMenuItem = createServerFn({ method: "GET" })
 
     // Packs project derived stock so the detail page's low-stock badge and
     // quantity cap match what checkout will actually allow.
+    const contents = item.packSize
+      ? ((await loadPackContentsByPackIds(db, [item.id])).get(item.id) ?? [])
+      : [];
+    const [stockMatrix, locationIds] = await Promise.all([
+      loadStockMatrix(db, [item.id, ...contents.map((content) => content.cookieItemId)]),
+      activeLocationIds(db),
+    ]);
+
     let projected = item;
-    if (item.packSize) {
-      const contents = await loadPackContentsByPackIds(db, [item.id]);
-      const rows = contents.get(item.id) ?? [];
-      if (rows.length > 0) {
-        const stock = derivePackStock(item, rows);
-        projected = {
-          ...item,
-          available: stock.available,
-          trackInventory: stock.trackInventory,
-          inventoryQuantity: stock.inventoryQuantity,
-        };
-      }
+    if (locationIds.length > 0) {
+      const stock = projectSellableAcrossLocations(item, contents, stockMatrix, locationIds);
+      projected = {
+        ...item,
+        available: item.available && stock.available,
+        trackInventory: stock.trackInventory,
+        inventoryQuantity: stock.inventoryQuantity,
+      };
+    } else if (item.packSize && contents.length > 0) {
+      const stock = derivePackStock(item, contents);
+      projected = {
+        ...item,
+        available: stock.available,
+        trackInventory: stock.trackInventory,
+        inventoryQuantity: stock.inventoryQuantity,
+      };
     }
 
     // Public item page: strip internal Stripe ids, keep the rest.
@@ -739,9 +939,22 @@ export const getAdminMenuItem = createServerFn({ method: "GET" })
       return null;
     }
 
-    const contents = await loadPackContentsByPackIds(createDb(), [item.id]);
+    const db = createDb();
+    const contents = await loadPackContentsByPackIds(db, [item.id]);
+    const [stockRows, locations] = await Promise.all([
+      db
+        .select({
+          locationId: menuItemLocationInventory.pickupLocationId,
+          quantity: menuItemLocationInventory.quantity,
+        })
+        .from(menuItemLocationInventory)
+        .where(eq(menuItemLocationInventory.menuItemId, item.id)),
+      getOrCreatePickupLocations(db),
+    ]);
     return {
       ...item,
+      stockByLocation: stockRows,
+      locations: locations.filter((l) => l.active),
       packContents: (contents.get(item.id) ?? []).map((content) => ({
         cookieItemId: content.cookieItemId,
         quantity: content.quantity,
@@ -844,23 +1057,67 @@ export const createOrder = createServerFn({ method: "POST" })
         }
       }
     }
+
+    // Every order draws from exactly one location's pool: the chosen pickup
+    // spot, or the primary location for shipping orders. Falls back to the
+    // legacy global-row reservation only when no active location exists.
+    let inventoryLocationId: string | null;
+    if (isShipping) {
+      inventoryLocationId = (await primaryInventoryLocation(db))?.id ?? null;
+    } else {
+      const requested = await db.query.pickupLocations
+        .findFirst({
+          where: eq(pickupLocations.id, data.pickupLocationId ?? ""),
+          columns: { id: true },
+        })
+        .catch(() => null);
+      if (!requested) {
+        throw new Error("Choose a pickup location.");
+      }
+      inventoryLocationId = requested.id;
+    }
+
+    // Stock at the order's location: cart items plus every cookie inside a
+    // pack (packs expand at reservation time).
+    const stockItemIds = [
+      ...ids,
+      ...[...contentsByPackId.values()].flatMap((contents) =>
+        contents.filter((c) => c.cookie?.trackInventory).map((c) => c.cookieItemId),
+      ),
+    ];
+    const locationStock =
+      inventoryLocationId != null
+        ? await loadLocationStock(db, inventoryLocationId, [...new Set(stockItemIds)])
+        : null;
+
     const isLineSellable = (item: (typeof foundItems)[number], quantity: number) => {
       if (!item.available) {
         return false;
       }
+      const stockAt = (itemId: string) =>
+        locationStock != null ? (locationStock.get(itemId) ?? 0) : item.inventoryQuantity;
       if (item.packSize) {
         const contents = contentsByPackId.get(item.id) ?? [];
         // Packs with contents derive stock from the cookies inside them;
         // the pack row's own inventory flags never apply. (byId only holds
         // cart line ids, so resolve via content.cookie.)
         if (contents.length > 0) {
-          const stock = derivePackStock(item, contents);
+          const locatedContents =
+            locationStock != null
+              ? contents.map((content) => ({
+                  ...content,
+                  cookie: content.cookie
+                    ? { ...content.cookie, inventoryQuantity: stockAt(content.cookieItemId) }
+                    : content.cookie,
+                }))
+              : contents;
+          const stock = derivePackStock(item, locatedContents);
           return stock.available && (!stock.trackInventory || stock.inventoryQuantity >= quantity);
         }
         // Content-less packs (manual weight) sell from their own row.
-        return !item.trackInventory || item.inventoryQuantity >= quantity;
+        return !item.trackInventory || stockAt(item.id) >= quantity;
       }
-      return !item.trackInventory || item.inventoryQuantity >= quantity;
+      return !item.trackInventory || stockAt(item.id) >= quantity;
     };
 
     const lines = data.items.map((line) => {
@@ -963,28 +1220,59 @@ export const createOrder = createServerFn({ method: "POST" })
         }
 
         for (const [itemId, quantity] of units) {
-          const reserved = await db
-            .update(menuItems)
-            .set({
-              inventoryQuantity: sql`${menuItems.inventoryQuantity} - ${quantity}`,
-              available: sql`CASE WHEN ${menuItems.inventoryQuantity} - ${quantity} > 0 THEN 1 ELSE 0 END`,
-              updatedAt: sql`CURRENT_TIMESTAMP`,
-            })
-            .where(
-              and(
-                eq(menuItems.id, itemId),
-                eq(menuItems.available, true),
-                gte(menuItems.inventoryQuantity, quantity),
-              ),
-            )
-            .returning({ id: menuItems.id });
+          if (inventoryLocationId != null) {
+            // Per-location reservation: one conditional UPDATE against the
+            // order's location pool. Race-safe on D1 (quantity >= n gate).
+            const reserved = await db
+              .update(menuItemLocationInventory)
+              .set({
+                quantity: sql`${menuItemLocationInventory.quantity} - ${quantity}`,
+                updatedAt: sql`CURRENT_TIMESTAMP`,
+              })
+              .where(
+                and(
+                  eq(menuItemLocationInventory.menuItemId, itemId),
+                  eq(menuItemLocationInventory.pickupLocationId, inventoryLocationId),
+                  gte(menuItemLocationInventory.quantity, quantity),
+                ),
+              )
+              .returning({ id: menuItemLocationInventory.id });
 
-          if (reserved.length === 0) {
-            // Content cookies aren't cart lines, so look names up in the
-            // contents map too — a pack's cookie selling out mid-order should
-            // say which one, not "An item".
-            const soldOutName = byId.get(itemId)?.name ?? nameByContentId.get(itemId) ?? "An item";
-            throw new Error(`${soldOutName} just sold out or does not have enough left.`);
+            if (reserved.length === 0) {
+              // Content cookies aren't cart lines, so look names up in the
+              // contents map too — a pack's cookie selling out mid-order should
+              // say which one, not "An item".
+              const soldOutName =
+                byId.get(itemId)?.name ?? nameByContentId.get(itemId) ?? "An item";
+              throw new Error(
+                `${soldOutName} just sold out or does not have enough left at this location.`,
+              );
+            }
+          } else {
+            // Legacy path (no active locations configured): reserve against
+            // the item's global row, exactly as orders did before per-location
+            // stock existed.
+            const reserved = await db
+              .update(menuItems)
+              .set({
+                inventoryQuantity: sql`${menuItems.inventoryQuantity} - ${quantity}`,
+                available: sql`CASE WHEN ${menuItems.inventoryQuantity} - ${quantity} > 0 THEN 1 ELSE 0 END`,
+                updatedAt: sql`CURRENT_TIMESTAMP`,
+              })
+              .where(
+                and(
+                  eq(menuItems.id, itemId),
+                  eq(menuItems.available, true),
+                  gte(menuItems.inventoryQuantity, quantity),
+                ),
+              )
+              .returning({ id: menuItems.id });
+
+            if (reserved.length === 0) {
+              const soldOutName =
+                byId.get(itemId)?.name ?? nameByContentId.get(itemId) ?? "An item";
+              throw new Error(`${soldOutName} just sold out or does not have enough left.`);
+            }
           }
 
           reservedLines.push({ itemId, quantity });
@@ -1002,8 +1290,8 @@ export const createOrder = createServerFn({ method: "POST" })
       }
     } catch (caught) {
       // Mid-loop failure: earlier iterations already reserved stock — give
-      // it back before surfacing the error so nothing leaks.
-      await releaseReservedLines(db, reservedLines).catch(() => {});
+      // it back to the same pool before surfacing the error so nothing leaks.
+      await releaseReservedLines(db, reservedLines, inventoryLocationId).catch(() => {});
       throw caught;
     }
 
@@ -1039,6 +1327,7 @@ export const createOrder = createServerFn({ method: "POST" })
         clientOrderId: data.clientOrderId ?? null,
         fulfillmentType: isShipping ? ("shipping" as const) : ("pickup" as const),
         pickupLocationId,
+        inventoryLocationId,
         pickupLocationName,
         pickupDate,
         pickupTime,
@@ -1292,7 +1581,7 @@ export const createOrder = createServerFn({ method: "POST" })
             .where(eq(orders.id, orderId));
           logger.warn("order.cancelled_after_create_failure", { orderId });
         }
-        await releaseReservedLines(db, reservedLines);
+        await releaseReservedLines(db, reservedLines, inventoryLocationId);
       } catch (releaseError) {
         logger.error("inventory.release_failed", {
           orderId,
@@ -1427,6 +1716,127 @@ export const getShippingOptions = createServerFn({ method: "POST" })
       totalOunces: result.totalOunces,
       handlingFeeCents: settings.handlingFeeCents,
     };
+  });
+
+const cartLocationAvailabilitySchema = z.object({
+  items: z.array(cartLineSchema).min(1).max(50),
+  /** Pickup: the location to check. Shipping: omit — the primary pool is used. */
+  locationId: z.string().min(1).optional(),
+});
+
+/**
+ * Can this cart be fulfilled from one location's pool? Checkout step 2 asks
+ * this when the customer picks a pickup spot (or enters shipping), so stock
+ * problems surface before submit instead of as a post-submit error. Packs
+ * expand into their cookies, per location — a pack never mixes two pools.
+ */
+export const getCartLocationAvailability = createServerFn({ method: "POST" })
+  .validator((data: unknown) => cartLocationAvailabilitySchema.parse(data))
+  .handler(async ({ data }) => {
+    if (!hasDatabase()) {
+      return { configured: false, locationName: "", lines: [] };
+    }
+    const db = createDb();
+
+    const { getRequestHeaders } = await import("@tanstack/react-start/server");
+    const ip = clientIpFromHeaders(getRequestHeaders());
+    const limit = await rateLimit(db, "cart-availability", ip, 60, 30);
+    if (!limit.ok) {
+      throw new Error("Too many availability checks. Wait a moment and try again.");
+    }
+
+    // Resolve the pool: the chosen pickup location, or the primary location
+    // (first active by sort order) for shipping orders.
+    let location: { id: string; name: string } | null;
+    if (data.locationId) {
+      location =
+        (await db.query.pickupLocations.findFirst({
+          where: and(eq(pickupLocations.id, data.locationId), eq(pickupLocations.active, true)),
+          columns: { id: true, name: true },
+        })) ?? null;
+    } else {
+      location = await primaryInventoryLocation(db);
+    }
+    if (!location) {
+      // No pools configured yet — nothing can block checkout.
+      return { configured: false, locationName: "", lines: [] };
+    }
+
+    const ids = data.items.map((item) => item.id);
+    const foundItems = await db.select().from(menuItems).where(inArray(menuItems.id, ids));
+    const byId = new Map(foundItems.map((item) => [item.id, item]));
+    const contentsByPackId = await loadPackContentsByPackIds(
+      db,
+      foundItems.filter((item) => item.packSize).map((item) => item.id),
+    );
+
+    // Stock ids: cart lines plus every tracked cookie inside a pack.
+    const stockItemIds = [
+      ...ids,
+      ...[...contentsByPackId.values()].flatMap((contents) =>
+        contents
+          .filter((content) => content.cookie?.trackInventory)
+          .map((content) => content.cookieItemId),
+      ),
+    ];
+    const locationStock = await loadLocationStock(db, location.id, [...new Set(stockItemIds)]);
+
+    const lines = data.items.map((line) => {
+      const item = byId.get(line.id);
+      if (!item) {
+        return {
+          itemId: line.id,
+          name: "An item",
+          requested: line.quantity,
+          available: 0,
+          tracked: true,
+          enough: false,
+        };
+      }
+
+      let sellable: number;
+      if (item.packSize) {
+        const contents = contentsByPackId.get(item.id) ?? [];
+        if (contents.length > 0) {
+          const locatedContents = contents.map((content) =>
+            content.cookie
+              ? {
+                  ...content,
+                  cookie: {
+                    ...content.cookie,
+                    inventoryQuantity: locationStock.get(content.cookieItemId) ?? 0,
+                  },
+                }
+              : content,
+          );
+          const stock = derivePackStock(item, locatedContents);
+          if (!stock.available) {
+            sellable = 0;
+          } else {
+            sellable = stock.trackInventory ? stock.inventoryQuantity : Number.POSITIVE_INFINITY;
+          }
+        } else {
+          sellable = item.trackInventory
+            ? (locationStock.get(item.id) ?? 0)
+            : Number.POSITIVE_INFINITY;
+        }
+      } else {
+        sellable = item.trackInventory
+          ? (locationStock.get(item.id) ?? 0)
+          : Number.POSITIVE_INFINITY;
+      }
+
+      return {
+        itemId: item.id,
+        name: item.name,
+        requested: line.quantity,
+        available: Number.isFinite(sellable) ? sellable : line.quantity,
+        tracked: Number.isFinite(sellable),
+        enough: sellable >= line.quantity,
+      };
+    });
+
+    return { configured: true, locationName: location.name, lines };
   });
 
 export const getAdminShippingSettings = createServerFn({ method: "GET" }).handler(async () => {
@@ -2100,7 +2510,7 @@ export const getAdminDashboard = createServerFn({ method: "GET" }).handler(async
   await requireAdmin();
   if (!hasDatabase()) {
     return {
-      items: seedMenu,
+      items: seedMenu.map((item) => ({ ...item, stockByLocation: [] })),
       recentOrders: [],
       todaysMenu: [],
       shopDays: [],
@@ -2128,7 +2538,31 @@ export const getAdminDashboard = createServerFn({ method: "GET" }).handler(async
     getOrCreatePickupLocations(db),
   ]);
 
-  return { items, recentOrders, todaysMenu, shopDays, locations, statuses: orderStatuses };
+  // Live stock per location — menu_items.inventoryQuantity is only the
+  // admin-entered default and never reflects sales, so the dashboard reads
+  // the real pools.
+  const stockMatrix = await loadStockMatrix(
+    db,
+    items.map((item) => item.id),
+  );
+  const itemsWithStock = items.map((item) => ({
+    ...item,
+    stockByLocation: [...(stockMatrix.get(item.id) ?? new Map()).entries()].map(
+      ([locationId, quantity]) => ({
+        locationId,
+        quantity,
+      }),
+    ),
+  }));
+
+  return {
+    items: itemsWithStock,
+    recentOrders,
+    todaysMenu,
+    shopDays,
+    locations,
+    statuses: orderStatuses,
+  };
 });
 
 export const saveMenuItem = createServerFn({ method: "POST" })
@@ -2190,6 +2624,10 @@ export const saveMenuItem = createServerFn({ method: "POST" })
       }
     }
 
+    // Per-location stock is the real sellable quantity; the legacy global
+    // column keeps their sum so fallback paths stay truthful.
+    const stockTotal = data.stockByLocation?.reduce((sum, row) => sum + row.quantity, 0);
+
     const values = {
       id,
       name: data.name,
@@ -2199,7 +2637,7 @@ export const saveMenuItem = createServerFn({ method: "POST" })
       ingredients: data.ingredients || "Ask for ingredients",
       allergens: data.allergens,
       priceCents: data.priceCents,
-      inventoryQuantity: data.inventoryQuantity,
+      inventoryQuantity: stockTotal ?? data.inventoryQuantity,
       trackInventory: data.trackInventory,
       available: data.available,
       featured: data.featured,
@@ -2244,6 +2682,60 @@ export const saveMenuItem = createServerFn({ method: "POST" })
             quantity: content.quantity,
           })),
         );
+      }
+    }
+
+    // Per-location stock rows (upsert). When a save arrives without them
+    // (older callers), seed rows for a brand-new item by splitting the
+    // entered global quantity — same policy as the migration backfill.
+    if (data.stockByLocation && data.stockByLocation.length > 0) {
+      for (const row of data.stockByLocation) {
+        await db
+          .insert(menuItemLocationInventory)
+          .values({
+            id: `${id}:${row.locationId}`,
+            menuItemId: id,
+            pickupLocationId: row.locationId,
+            quantity: row.quantity,
+            updatedAt: sql`CURRENT_TIMESTAMP`,
+          })
+          .onConflictDoUpdate({
+            target: [
+              menuItemLocationInventory.menuItemId,
+              menuItemLocationInventory.pickupLocationId,
+            ],
+            set: {
+              quantity: row.quantity,
+              updatedAt: sql`CURRENT_TIMESTAMP`,
+            },
+          });
+      }
+    } else if (!data.id) {
+      const locations = (await getOrCreatePickupLocations(db)).filter((l) => l.active);
+      const split = splitAcrossLocations(
+        data.inventoryQuantity,
+        locations.map((l) => l.id),
+      );
+      for (const [locationId, quantity] of split) {
+        await db
+          .insert(menuItemLocationInventory)
+          .values({
+            id: `${id}:${locationId}`,
+            menuItemId: id,
+            pickupLocationId: locationId,
+            quantity,
+            updatedAt: sql`CURRENT_TIMESTAMP`,
+          })
+          .onConflictDoUpdate({
+            target: [
+              menuItemLocationInventory.menuItemId,
+              menuItemLocationInventory.pickupLocationId,
+            ],
+            set: {
+              quantity,
+              updatedAt: sql`CURRENT_TIMESTAMP`,
+            },
+          });
       }
     }
 

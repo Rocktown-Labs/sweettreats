@@ -1,24 +1,32 @@
 import { createDb } from "@sweettreats/db";
-import { menuItems, orderItems } from "@sweettreats/db/schema/index";
+import {
+  menuItemLocationInventory,
+  menuItems,
+  orderItems,
+  orders,
+} from "@sweettreats/db/schema/index";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 
 /**
  * Inventory helpers shared by checkout and the Stripe webhook.
  *
+ * Stock lives in per-location rows (`menu_item_location_inventory`): each
+ * pickup location has its own case, orders decrement exactly one location's
+ * pool (recorded on `orders.inventory_location_id`), and releases credit that
+ * same pool. Legacy orders placed before the per-location migration have a
+ * null `inventory_location_id` — those reserve/ release against the item's
+ * global row, so old pending orders keep behaving exactly as they did.
+ *
  * Reservation is a conditional UPDATE (`WHERE available AND quantity >= n`),
- * which is race-safe on D1. Release must mirror reservation exactly:
- * only tracked items ever had stock taken, and availability is only restored
- * from the sold-out state — an admin's deliberate `available = false` is
- * never overwritten by a release.
+ * which is race-safe on D1. Release mirrors it with a single upsert.
  */
 
 type ReleaseLine = { itemId: string; quantity: number };
 
-async function releaseLines(
-  db: ReturnType<typeof createDb>,
-  lines: ReleaseLine[],
-): Promise<number> {
+type Db = ReturnType<typeof createDb>;
+
+async function releaseLinesGlobal(db: Db, lines: ReleaseLine[]): Promise<number> {
   let released = 0;
   for (const line of lines) {
     await db
@@ -34,15 +42,47 @@ async function releaseLines(
       .where(eq(menuItems.id, line.itemId));
     released += line.quantity;
   }
+  return released;
+}
 
-  if (released > 0) {
-    logger.info("inventory.released", { units: released });
+/**
+ * Credit stock back to one location's pool. A single INSERT .. ON CONFLICT
+ * DO UPDATE is race-safe and also repairs a missing row (e.g. the location
+ * was created before this item existed).
+ */
+async function releaseLinesAtLocation(
+  db: Db,
+  locationId: string,
+  lines: ReleaseLine[],
+): Promise<number> {
+  let released = 0;
+  for (const line of lines) {
+    if (line.quantity <= 0) {
+      continue;
+    }
+    await db
+      .insert(menuItemLocationInventory)
+      .values({
+        id: `${line.itemId}:${locationId}`,
+        menuItemId: line.itemId,
+        pickupLocationId: locationId,
+        quantity: line.quantity,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .onConflictDoUpdate({
+        target: [menuItemLocationInventory.menuItemId, menuItemLocationInventory.pickupLocationId],
+        set: {
+          quantity: sql`${menuItemLocationInventory.quantity} + ${line.quantity}`,
+          updatedAt: sql`CURRENT_TIMESTAMP`,
+        },
+      });
+    released += line.quantity;
   }
   return released;
 }
 
-export async function releaseInventoryForOrder(orderId: string): Promise<number> {
-  const db = createDb();
+/** Collect the per-item units an order reserved, expanding pack snapshots. */
+async function collectReservedLines(db: Db, orderId: string): Promise<ReleaseLine[] | null> {
   const rows = await db
     .select({
       menuItemId: orderItems.menuItemId,
@@ -58,7 +98,6 @@ export async function releaseInventoryForOrder(orderId: string): Promise<number>
     .leftJoin(menuItems, eq(orderItems.menuItemId, menuItems.id))
     .where(eq(orderItems.orderId, orderId));
 
-  const tracked: ReleaseLine[] = [];
   const byId = new Map<string, number>();
   const addUnits = (units: { menuItemId: string | null; quantity: number }[]) => {
     for (const unit of units) {
@@ -85,14 +124,38 @@ export async function releaseInventoryForOrder(orderId: string): Promise<number>
       addUnits([{ menuItemId: row.menuItemId, quantity: row.quantity }]);
     }
   }
-  for (const [itemId, quantity] of byId) {
-    tracked.push({ itemId, quantity });
-  }
 
-  if (tracked.length === 0) {
+  if (byId.size === 0) {
+    return null;
+  }
+  return [...byId.entries()].map(([itemId, quantity]) => ({ itemId, quantity }));
+}
+
+export async function releaseInventoryForOrder(orderId: string): Promise<number> {
+  const db = createDb();
+
+  const order = await db.query.orders
+    .findFirst({
+      where: eq(orders.id, orderId),
+      columns: { id: true, inventoryLocationId: true },
+    })
+    .catch(() => null);
+  const lines = await collectReservedLines(db, orderId);
+  if (!lines) {
     return 0;
   }
-  return releaseLines(db, tracked);
+
+  // Per-location orders credit the pool they decremented; legacy orders
+  // (null location) fall back to the pre-migration global-row behavior.
+  const released =
+    order?.inventoryLocationId != null
+      ? await releaseLinesAtLocation(db, order.inventoryLocationId, lines)
+      : await releaseLinesGlobal(db, lines);
+
+  if (released > 0) {
+    logger.info("inventory.released", { units: released, orderId });
+  }
+  return released;
 }
 
 /** Snapshot format: [{"menuItemId":"...","quantity":3}, ...]. Exported for tests. */
@@ -127,8 +190,9 @@ export function parseReservationSnapshot(
  * that were actually reserved (tracked items), so no extra filtering applies.
  */
 export async function releaseReservedLines(
-  db: ReturnType<typeof createDb>,
+  db: Db,
   lines: { itemId: string | null; quantity: number }[],
+  locationId?: string | null,
 ): Promise<number> {
   const valid = lines.filter(
     (line): line is ReleaseLine =>
@@ -137,5 +201,14 @@ export async function releaseReservedLines(
   if (valid.length === 0) {
     return 0;
   }
-  return releaseLines(db, valid);
+
+  const released =
+    locationId != null
+      ? await releaseLinesAtLocation(db, locationId, valid)
+      : await releaseLinesGlobal(db, valid);
+
+  if (released > 0) {
+    logger.info("inventory.released", { units: released, inFlight: true });
+  }
+  return released;
 }
