@@ -1,5 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { Minus, Plus, ShoppingBag } from "lucide-react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { ArrowLeft, Minus, Plus, ShoppingBag } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -40,7 +40,17 @@ function ItemPage() {
   const cart = useCart();
 
   if (!item) {
-    return <main className="page">Cookie not found.</main>;
+    return (
+      <main className="page item-detail-page">
+        <div className="item-nav">
+          <Link to="/menu" className="item-back-button">
+            <ArrowLeft size={16} aria-hidden="true" />
+            <span>Back to menu</span>
+          </Link>
+        </div>
+        <p>Cookie not found.</p>
+      </main>
+    );
   }
 
   const categoryLabel = item.category === "Main Cookies" ? "Today's Batch" : item.category;
@@ -51,24 +61,36 @@ function ItemPage() {
   const canAddMore = item.available && inCartQuantity + quantity <= maxQuantity;
 
   return (
-    <main className="page">
-      <div className="layout-two">
-        <section className="hero-flyer">
-          <img src={imageUrl(item.imageKey)} alt={item.imageAlt} className="cookie-image" />
+    <main className="page item-detail-page">
+      <div className="item-nav">
+        <Link to="/menu" className="item-back-button">
+          <ArrowLeft size={16} aria-hidden="true" />
+          <span>Back to menu</span>
+        </Link>
+      </div>
+      <div className="layout-two item-detail-layout">
+        <section className="hero-flyer item-detail-image-wrap">
+          <img
+            src={imageUrl(item.imageKey)}
+            alt={item.imageAlt || item.name}
+            className="cookie-image item-detail-image"
+          />
         </section>
-        <aside className="panel">
+        <aside className="panel item-detail-panel">
           <p className="eyebrow">{categoryLabel}</p>
-          <h1 className="page-title">{item.name}</h1>
+          <h1 className="item-title">{item.name}</h1>
           <p className="hero-copy">{item.description}</p>
-          <p>
+          <p className="item-price">
             <strong>{formatMoney(item.priceCents)}</strong>
           </p>
-          <p>
-            <strong>Ingredients:</strong> {item.ingredients}
-          </p>
-          <p>
-            <strong>Allergens:</strong> {item.allergens || "Ask before ordering"}
-          </p>
+          <div className="item-meta">
+            <p>
+              <strong>Ingredients:</strong> {item.ingredients}
+            </p>
+            <p>
+              <strong>Allergens:</strong> {item.allergens || "Ask before ordering"}
+            </p>
+          </div>
           <div className="quantity-row">
             <div className="stepper">
               <button

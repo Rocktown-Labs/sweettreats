@@ -47,7 +47,11 @@ export function CookieCard({
         <div className="cookie-card-top">
           <div>
             <p className="eyebrow">{categoryLabel || "Today's Batch"}</p>
-            <h3>{item.name}</h3>
+            <h3>
+              <Link to="/item/$id" params={{ id: item.id }} className="cookie-title-link">
+                {item.name}
+              </Link>
+            </h3>
           </div>
           <strong>{formatMoney(item.priceCents)}</strong>
         </div>
