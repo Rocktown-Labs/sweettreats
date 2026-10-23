@@ -2517,6 +2517,26 @@ export const getAccountOrder = createServerFn({ method: "GET" })
   });
 
 /**
+ * Orders list for the admin orders page. The TanStack DB spike (see
+ * src/lib/admin-orders-db.ts) fetches this into a reactive collection, so
+ * rows update live from realtime pushes and optimistic status changes.
+ * Statuses come from the orderStatuses enum client-side; this returns data.
+ */
+export const getAdminOrders = createServerFn({ method: "GET" }).handler(async () => {
+  await requireAdmin();
+  if (!hasDatabase()) {
+    return { orders: [] };
+  }
+  const db = createDb();
+  const list = await db.query.orders.findMany({
+    with: { items: true, pickupLocation: true },
+    orderBy: [desc(orders.createdAt), desc(orders.id)],
+    limit: 100,
+  });
+  return { orders: list };
+});
+
+/**
  * Badge state for the admin notification system: how many orders arrived
  * after the caller's "last seen" cursor, plus the latest order for the
  * client's cursor bookkeeping. Timestamps use SQLite CURRENT_TIMESTAMP

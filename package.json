@@ -48,6 +48,9 @@
   },
   "dependencies": {
     "@sweettreats/env": "workspace:*",
+    "@tanstack/query-core": "^5.104.5",
+    "@tanstack/query-db-collection": "^1.4.8",
+    "@tanstack/react-db": "^0.5.12",
     "dotenv": "^17.4.2",
     "zod": "^4.4.3"
   },
