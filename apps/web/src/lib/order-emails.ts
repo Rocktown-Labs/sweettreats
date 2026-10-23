@@ -1,7 +1,12 @@
 import { createDb } from "@sweettreats/db";
 import { orders, pickupLocations } from "@sweettreats/db/schema/index";
 import { eq } from "drizzle-orm";
-import { sendAdminOrderEmail, sendCustomerOrderEmail } from "@sweettreats/email";
+import {
+  sendAdminOrderEmail,
+  sendCustomerDeliveredEmail,
+  sendCustomerOrderEmail,
+  sendCustomerShippedEmail,
+} from "@sweettreats/email";
 import { logger } from "./logger";
 import { getOrderNotificationEmails } from "./notifications";
 import { env } from "@sweettreats/env/server";
@@ -194,6 +199,110 @@ export async function sendOrderNotifications(orderId: string) {
       error: err instanceof Error ? err.message : String(err),
     });
     // Re-throw: the caller is the queue consumer, which retries with backoff.
+    throw err;
+  }
+}
+
+/** USPS is the only shipping carrier today — build its public tracking link. */
+function uspsTrackingUrl(trackingNumber: string): string {
+  return `https://tools.usps.com/go/TrackConfirmAction?tLabels=${encodeURIComponent(trackingNumber)}`;
+}
+
+/**
+ * "Your order has shipped" — customer-only (the shop just bought the label
+ * itself, so there is nothing to notify itself about). Distinct template with
+ * the tracking number and a direct USPS tracking button.
+ */
+export async function sendOrderShippedNotifications(orderId: string) {
+  try {
+    const db = createDb();
+    const order = await db.query.orders.findFirst({
+      where: eq(orders.id, orderId),
+    });
+
+    if (!order?.trackingNumber || !order.customerEmail) {
+      logger.info("order.shipped_email_skipped", { orderId });
+      return;
+    }
+
+    const result = await sendCustomerShippedEmail(
+      {
+        orderNumber: order.orderNumber,
+        customerName: order.customerName,
+        trackingNumber: order.trackingNumber,
+        serviceName: order.shippingServiceName || "USPS",
+        trackingUrl: uspsTrackingUrl(order.trackingNumber),
+      },
+      {
+        to: order.customerEmail,
+        from: readEnv("RESEND_FROM_EMAIL") || "Sweet Treats LR <noreply@orders.sweettreatslr.com>",
+        apiKey: readEnv("RESEND_API_KEY"),
+      },
+    );
+
+    logger.info("order.shipped_email_sent", {
+      orderId,
+      orderNumber: order.orderNumber,
+      success: result.success,
+      mocked: result.mocked,
+    });
+    if (!result.success) {
+      // Throw so the outbox consumer retries; Resend's idempotency key dedupes.
+      throw new Error("Shipped email delivery failed");
+    }
+  } catch (err) {
+    logger.error("order.shipped_email_failed", {
+      orderId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+}
+
+/**
+ * "Delivered!" — customer-only, fired by the Shippo tracking webhook when the
+ * carrier reports delivery. Closes the loop on the shipped box.
+ */
+export async function sendOrderDeliveredNotifications(orderId: string) {
+  try {
+    const db = createDb();
+    const order = await db.query.orders.findFirst({
+      where: eq(orders.id, orderId),
+    });
+
+    if (!order?.trackingNumber || !order.customerEmail) {
+      logger.info("order.delivered_email_skipped", { orderId });
+      return;
+    }
+
+    const result = await sendCustomerDeliveredEmail(
+      {
+        orderNumber: order.orderNumber,
+        customerName: order.customerName,
+        trackingNumber: order.trackingNumber,
+        trackingUrl: uspsTrackingUrl(order.trackingNumber),
+      },
+      {
+        to: order.customerEmail,
+        from: readEnv("RESEND_FROM_EMAIL") || "Sweet Treats LR <noreply@orders.sweettreatslr.com>",
+        apiKey: readEnv("RESEND_API_KEY"),
+      },
+    );
+
+    logger.info("order.delivered_email_sent", {
+      orderId,
+      orderNumber: order.orderNumber,
+      success: result.success,
+      mocked: result.mocked,
+    });
+    if (!result.success) {
+      throw new Error("Delivered email delivery failed");
+    }
+  } catch (err) {
+    logger.error("order.delivered_email_failed", {
+      orderId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     throw err;
   }
 }

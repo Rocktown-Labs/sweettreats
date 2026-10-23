@@ -30,10 +30,15 @@ type IntegrationSettings = {
     webhook: KeyStatus;
     mode: "test" | "live" | null;
   };
-  shippo: { api: KeyStatus };
+  shippo: { api: KeyStatus; webhookToken: KeyStatus };
 };
 
-type FieldId = "stripeSecret" | "stripePublishable" | "stripeWebhook" | "shippoApi";
+type FieldId =
+  | "stripeSecret"
+  | "stripePublishable"
+  | "stripeWebhook"
+  | "shippoApi"
+  | "shippoWebhookToken";
 
 const FIELDS: {
   id: FieldId;
@@ -75,6 +80,14 @@ const FIELDS: {
     secret: true,
     getStatus: (s) => s.shippo.api,
   },
+  {
+    id: "shippoWebhookToken",
+    label: "Shippo tracking-webhook token",
+    placeholder: "Make up a long random string",
+    hint: "Pastes into the Shippo webhook URL as ?token=… when you create the track_updated webhook. The webhook rejects any delivery without it.",
+    secret: true,
+    getStatus: (s) => s.shippo.webhookToken,
+  },
 ];
 
 function StatusBadge({ status }: { status: KeyStatus }) {
@@ -113,12 +126,14 @@ function AdminSettingsPage() {
     stripePublishable: "",
     stripeWebhook: "",
     shippoApi: "",
+    shippoWebhookToken: "",
   });
   const [clear, setClear] = useState<Record<FieldId, boolean>>({
     stripeSecret: false,
     stripePublishable: false,
     stripeWebhook: false,
     shippoApi: false,
+    shippoWebhookToken: false,
   });
   const [isSaving, setSaving] = useState(false);
   const [isSyncing, setSyncing] = useState(false);
@@ -171,12 +186,14 @@ function AdminSettingsPage() {
         stripePublishable: "",
         stripeWebhook: "",
         shippoApi: "",
+        shippoWebhookToken: "",
       });
       setClear({
         stripeSecret: false,
         stripePublishable: false,
         stripeWebhook: false,
         shippoApi: false,
+        shippoWebhookToken: false,
       });
       await refresh();
     } catch (caught) {

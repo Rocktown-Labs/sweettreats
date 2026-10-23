@@ -106,6 +106,10 @@ export const web = Cloudflare.Website.Vite(
           Redacted.make(""),
         ),
         SHIPPO_API_KEY: Config.withDefault(Config.Redacted("SHIPPO_API_KEY"), Redacted.make("")),
+        SHIPPO_WEBHOOK_TOKEN: Config.withDefault(
+          Config.Redacted("SHIPPO_WEBHOOK_TOKEN"),
+          Redacted.make(""),
+        ),
       },
     };
   }),

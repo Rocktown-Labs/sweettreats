@@ -7,6 +7,12 @@ import AdminOrderNotificationEmail, {
 import CustomerOrderConfirmationEmail, {
   type CustomerOrderConfirmationEmailProps,
 } from "../emails/customer-order-confirmation";
+import CustomerOrderShippedEmail, {
+  type CustomerOrderShippedEmailProps,
+} from "../emails/customer-order-shipped";
+import CustomerOrderDeliveredEmail, {
+  type CustomerOrderDeliveredEmailProps,
+} from "../emails/customer-order-delivered";
 import MagicLinkEmail, { type MagicLinkEmailProps } from "../emails/magic-link";
 import VerifyEmail, { type VerifyEmailProps } from "../emails/verify-email";
 import WelcomeEmail, { type WelcomeEmailProps } from "../emails/welcome-email";
@@ -344,6 +350,118 @@ export async function sendMagicLinkEmail(
       JSON.stringify({
         event: "email.magic_link_failed",
         to: options.to,
+        error: error.message,
+      }),
+    );
+    return { success: false, error: error.message };
+  }
+
+  return { success: true, id: data?.id };
+}
+
+export async function sendCustomerShippedEmail(
+  props: CustomerOrderShippedEmailProps,
+  options: {
+    to: string;
+    from?: string;
+    apiKey?: string;
+  },
+): Promise<SendEmailResult> {
+  const from = options.from || DEFAULT_FROM_EMAIL;
+  const resend = getResendClient(options.apiKey);
+
+  const element = React.createElement(CustomerOrderShippedEmail, props);
+  const html = await render(element);
+  const text = await render(element, { plainText: true });
+
+  const subject = `Your Sweet Treats LR Order #${props.orderNumber} Has Shipped! 🚚`;
+
+  if (!resend) {
+    console.info(
+      JSON.stringify({
+        event: "email.customer_order_shipped_simulated",
+        orderNumber: props.orderNumber,
+        to: options.to,
+        subject,
+      }),
+    );
+    return { success: true, mocked: true };
+  }
+
+  const { data, error } = await resend.emails.send(
+    {
+      from,
+      to: options.to,
+      subject,
+      html,
+      text,
+    },
+    {
+      idempotencyKey: `customer-order-shipped/${props.orderNumber}`,
+    },
+  );
+
+  if (error) {
+    console.error(
+      JSON.stringify({
+        event: "email.customer_order_shipped_failed",
+        orderNumber: props.orderNumber,
+        error: error.message,
+      }),
+    );
+    return { success: false, error: error.message };
+  }
+
+  return { success: true, id: data?.id };
+}
+
+export async function sendCustomerDeliveredEmail(
+  props: CustomerOrderDeliveredEmailProps,
+  options: {
+    to: string;
+    from?: string;
+    apiKey?: string;
+  },
+): Promise<SendEmailResult> {
+  const from = options.from || DEFAULT_FROM_EMAIL;
+  const resend = getResendClient(options.apiKey);
+
+  const element = React.createElement(CustomerOrderDeliveredEmail, props);
+  const html = await render(element);
+  const text = await render(element, { plainText: true });
+
+  const subject = `Your Sweet Treats LR Order #${props.orderNumber} Was Delivered! 🍪`;
+
+  if (!resend) {
+    console.info(
+      JSON.stringify({
+        event: "email.customer_order_delivered_simulated",
+        orderNumber: props.orderNumber,
+        to: options.to,
+        subject,
+      }),
+    );
+    return { success: true, mocked: true };
+  }
+
+  const { data, error } = await resend.emails.send(
+    {
+      from,
+      to: options.to,
+      subject,
+      html,
+      text,
+    },
+    {
+      idempotencyKey: `customer-order-delivered/${props.orderNumber}`,
+    },
+  );
+
+  if (error) {
+    console.error(
+      JSON.stringify({
+        event: "email.customer_order_delivered_failed",
+        orderNumber: props.orderNumber,
         error: error.message,
       }),
     );

@@ -24,7 +24,12 @@ import { logger } from "./logger";
 
 type Db = ReturnType<typeof createDb>;
 
-export type OutboxEvent = "welcome" | "order.confirmed" | "order.abandoned_cart";
+export type OutboxEvent =
+  | "welcome"
+  | "order.confirmed"
+  | "order.shipped"
+  | "order.delivered"
+  | "order.abandoned_cart";
 
 export async function enqueueEmail(
   db: Db,

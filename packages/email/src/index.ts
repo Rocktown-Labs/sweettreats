@@ -10,6 +10,12 @@ export type {
   CustomerOrderItemProp,
 } from "../emails/customer-order-confirmation";
 
+export { default as CustomerOrderShippedEmail } from "../emails/customer-order-shipped";
+export type { CustomerOrderShippedEmailProps } from "../emails/customer-order-shipped";
+
+export { default as CustomerOrderDeliveredEmail } from "../emails/customer-order-delivered";
+export type { CustomerOrderDeliveredEmailProps } from "../emails/customer-order-delivered";
+
 export { default as MagicLinkEmail } from "../emails/magic-link";
 export type { MagicLinkEmailProps } from "../emails/magic-link";
 
@@ -26,7 +32,9 @@ export { getResendClient } from "./client";
 export {
   sendAbandonedCartEmail,
   sendAdminOrderEmail,
+  sendCustomerDeliveredEmail,
   sendCustomerOrderEmail,
+  sendCustomerShippedEmail,
   sendMagicLinkEmail,
   sendVerifyEmail,
   sendWelcomeEmail,

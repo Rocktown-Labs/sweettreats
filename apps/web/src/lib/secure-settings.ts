@@ -27,6 +27,7 @@ export const INTEGRATION_KEY_IDS = {
   stripePublishable: "stripe_publishable",
   stripeWebhook: "stripe_webhook",
   shippoApi: "shippo_api",
+  shippoWebhookToken: "shippo_webhook_token",
 } as const;
 
 export type IntegrationKeyId = (typeof INTEGRATION_KEY_IDS)[keyof typeof INTEGRATION_KEY_IDS];
@@ -138,6 +139,7 @@ function envFallback(keyId: IntegrationKeyId): string {
     stripe_publishable: "STRIPE_PUBLISHABLE_KEY",
     stripe_webhook: "STRIPE_WEBHOOK_SECRET",
     shippo_api: "SHIPPO_API_KEY",
+    shippo_webhook_token: "SHIPPO_WEBHOOK_TOKEN",
   };
   const name = map[keyId];
   const processEnv = typeof process === "undefined" ? undefined : process.env?.[name];

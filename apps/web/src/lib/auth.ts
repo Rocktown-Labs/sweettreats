@@ -35,3 +35,36 @@ export const requireSignedIn = createServerFn({ method: "GET" })
 
     return { userId: session.user.id };
   });
+
+/**
+ * Routing decision for the /admin tree's beforeLoad. Three visitors, three
+ * experiences:
+ * - admin           → proceed
+ * - expired session → a leftover session cookie with no valid session means
+ *                     a returning admin whose sign-in lapsed — send them to
+ *                     sign-in instead of a dead end
+ * - everyone else   → 404: anonymous visitors and signed-in non-admins see
+ *                     the same not-found as any nonexistent page
+ *
+ * Returns a decision word only — no identity info ships to the client.
+ */
+export const resolveAdminRouteAccess = createServerFn({ method: "GET" }).handler(async () => {
+  const headers = getRequestHeaders();
+  const { getAuth, isCurrentUserAdmin: check } = await import("./auth-server");
+
+  if (await check()) {
+    return { access: "admin" as const };
+  }
+
+  const hasSessionCookie = (headers.get("cookie") ?? "").includes("better-auth.session");
+  if (hasSessionCookie) {
+    const session = await getAuth()
+      .api.getSession({ headers })
+      .catch(() => null);
+    if (!session) {
+      return { access: "sign-in" as const };
+    }
+  }
+
+  return { access: "not-found" as const };
+});

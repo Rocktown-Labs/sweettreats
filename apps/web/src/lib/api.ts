@@ -2092,12 +2092,14 @@ export const getAdminAbandonedCarts = createServerFn({ method: "GET" }).handler(
 
 export const getIntegrationSettings = createServerFn({ method: "GET" }).handler(async () => {
   await requireAdmin();
-  const [stripeSecret, stripePublishable, stripeWebhook, shippoApi] = await Promise.all([
-    integrationKeyStatus(INTEGRATION_KEY_IDS.stripeSecret),
-    integrationKeyStatus(INTEGRATION_KEY_IDS.stripePublishable),
-    integrationKeyStatus(INTEGRATION_KEY_IDS.stripeWebhook),
-    integrationKeyStatus(INTEGRATION_KEY_IDS.shippoApi),
-  ]);
+  const [stripeSecret, stripePublishable, stripeWebhook, shippoApi, shippoWebhookToken] =
+    await Promise.all([
+      integrationKeyStatus(INTEGRATION_KEY_IDS.stripeSecret),
+      integrationKeyStatus(INTEGRATION_KEY_IDS.stripePublishable),
+      integrationKeyStatus(INTEGRATION_KEY_IDS.stripeWebhook),
+      integrationKeyStatus(INTEGRATION_KEY_IDS.shippoApi),
+      integrationKeyStatus(INTEGRATION_KEY_IDS.shippoWebhookToken),
+    ]);
   return {
     stripe: {
       secret: stripeSecret,
@@ -2105,7 +2107,7 @@ export const getIntegrationSettings = createServerFn({ method: "GET" }).handler(
       webhook: stripeWebhook,
       mode: await currentStripeMode(),
     },
-    shippo: { api: shippoApi },
+    shippo: { api: shippoApi, webhookToken: shippoWebhookToken },
   };
 });
 
@@ -2115,6 +2117,7 @@ const saveIntegrationKeysSchema = z.object({
   stripePublishable: z.string().trim().optional(),
   stripeWebhook: z.string().trim().optional(),
   shippoApi: z.string().trim().optional(),
+  shippoWebhookToken: z.string().trim().optional(),
 });
 
 /**
@@ -2190,6 +2193,17 @@ export const saveIntegrationKeys = createServerFn({ method: "POST" })
       await storeIntegrationKey(INTEGRATION_KEY_IDS.shippoApi, data.shippoApi);
     } else if (data.shippoApi === "") {
       await storeIntegrationKey(INTEGRATION_KEY_IDS.shippoApi, "");
+    }
+
+    if (typeof data.shippoWebhookToken === "string" && data.shippoWebhookToken) {
+      // This is OUR token — lauryan makes one up and appends ?token=… to the
+      // webhook URL in the Shippo portal; the webhook verifies against it.
+      if (data.shippoWebhookToken.length < 16) {
+        throw new Error("Make the Shippo webhook token at least 16 characters.");
+      }
+      await storeIntegrationKey(INTEGRATION_KEY_IDS.shippoWebhookToken, data.shippoWebhookToken);
+    } else if (data.shippoWebhookToken === "") {
+      await storeIntegrationKey(INTEGRATION_KEY_IDS.shippoWebhookToken, "");
     }
 
     // "On save, sync Stripe": a new secret means a new (or newly connected)
@@ -2417,17 +2431,9 @@ export const purchaseShippingLabel = createServerFn({ method: "POST" })
         })
         .where(eq(orders.id, data.orderId));
 
-      // "Your order has shipped" email via the outbox.
-      const outboxId = crypto.randomUUID();
-      await db
-        .insert(emailOutboxTable)
-        .values({
-          id: outboxId,
-          event: "order.shipped",
-          payload: JSON.stringify({ orderId: data.orderId }),
-        })
-        .catch(() => {});
-      await queueSend({ outboxId }).catch(() => {});
+      // "Your order has shipped" email via the outbox (typed enqueue — the
+      // cron sweep re-enqueues the row if the fast-path queue send fails).
+      await enqueueEmail(db, "order.shipped", { orderId: data.orderId }).catch(() => {});
 
       logger.info("shipping.label_purchased", {
         orderId: data.orderId,
@@ -2612,6 +2618,59 @@ export const getAdminDashboard = createServerFn({ method: "GET" }).handler(async
     statuses: orderStatuses,
   };
 });
+
+/**
+ * Quick in-store sale adjustment: bump one location's stock by `delta`
+ * (typically -1 when the counter sells a cookie, +1 after restocking).
+ * Clamps at zero — selling past zero means the count was stale, not that
+ * stock went negative.
+ */
+export const adjustLocationStock = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    z
+      .object({
+        itemId: z.string().min(1),
+        locationId: z.string().min(1),
+        delta: z
+          .number()
+          .int()
+          .min(-100)
+          .max(100)
+          .refine((value) => value !== 0, "Delta must be non-zero."),
+      })
+      .parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireAdmin();
+    if (!hasDatabase()) {
+      return { quantity: 0 };
+    }
+    const db = createDb();
+    const updated = await db
+      .update(menuItemLocationInventory)
+      .set({
+        quantity: sql`MAX(0, ${menuItemLocationInventory.quantity} + ${data.delta})`,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(
+        and(
+          eq(menuItemLocationInventory.menuItemId, data.itemId),
+          eq(menuItemLocationInventory.pickupLocationId, data.locationId),
+        ),
+      )
+      .returning({ quantity: menuItemLocationInventory.quantity });
+
+    if (updated.length === 0) {
+      throw new Error("No stock row for that item and location.");
+    }
+    logger.info("admin.location_stock_adjusted", {
+      itemId: data.itemId,
+      locationId: data.locationId,
+      delta: data.delta,
+      quantity: updated[0].quantity,
+    });
+    return { quantity: updated[0].quantity };
+  });
 
 export const saveMenuItem = createServerFn({ method: "POST" })
   .validator((data: unknown) => itemSchema.parse(data))

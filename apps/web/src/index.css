@@ -1038,6 +1038,60 @@ button:disabled {
   align-items: center;
 }
 
+.admin-list-row.with-quick {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.admin-row-link {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+/* In-store sale quick adjust: one button per location, count + minus. */
+.quick-stock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: center;
+}
+
+.quick-stock-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 2px solid #2a160d;
+  border-radius: 999px;
+  background: #fff2cc;
+  color: #1b0f08;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    transform 120ms ease-out,
+    background-color 120ms ease-out;
+}
+
+.quick-stock-button:hover:not(:disabled) {
+  background: #f6c453;
+  transform: translateY(-1px);
+}
+
+.quick-stock-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.quick-stock-button span {
+  font-weight: 700;
+  opacity: 0.75;
+}
+
 .admin-list-thumb {
   width: 76px;
   height: 76px;

@@ -4,7 +4,11 @@ import { eq } from "drizzle-orm";
 import { env } from "@sweettreats/env/server";
 import { sendAbandonedCartEmail, sendWelcomeEmail, type SendEmailResult } from "@sweettreats/email";
 
-import { sendOrderNotifications } from "./order-emails";
+import {
+  sendOrderNotifications,
+  sendOrderDeliveredNotifications,
+  sendOrderShippedNotifications,
+} from "./order-emails";
 import { logger } from "./logger";
 
 /**
@@ -93,7 +97,16 @@ export async function handleOutboxEvent(
       if (!orderId) {
         throw new Error("order.shipped payload missing orderId");
       }
-      await sendOrderNotifications(orderId); // reuses the same email pipeline for now
+      await sendOrderShippedNotifications(orderId);
+      return;
+    }
+
+    case "order.delivered": {
+      const orderId = String(payload.orderId ?? "");
+      if (!orderId) {
+        throw new Error("order.delivered payload missing orderId");
+      }
+      await sendOrderDeliveredNotifications(orderId);
       return;
     }
 

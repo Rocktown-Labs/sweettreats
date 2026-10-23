@@ -24,6 +24,26 @@ export const Route = createFileRoute("/admin/orders/$id")({
   component: AdminOrderDetailPage,
 });
 
+/** Friendly copy for the shipping-status chip (carrier statuses from Shippo). */
+function shippingStatusLabel(shippingStatus: string): string {
+  switch (shippingStatus) {
+    case "PRE_TRANSIT":
+      return "Pre transit";
+    case "TRANSIT":
+      return "In transit";
+    case "DELIVERED":
+      return "Delivered";
+    case "RETURNED":
+      return "Returned";
+    case "FAILURE":
+      return "Delivery failed";
+    case "label_created":
+      return "Label purchased";
+    default:
+      return shippingStatus || "Label purchased";
+  }
+}
+
 function AdminOrderDetailPage() {
   const { order, statuses } = Route.useLoaderData();
   const router = useRouter();
@@ -311,7 +331,7 @@ function ShippingLabelSection({
                   marginBottom: "6px",
                 }}
               >
-                {order.shippingStatus || "Label Purchased"}
+                {shippingStatusLabel(order.shippingStatus)}
               </span>
               {order.trackingNumber ? (
                 <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>
