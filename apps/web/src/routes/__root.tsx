@@ -173,6 +173,15 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         type: "application/ld+json",
         children: JSON.stringify(bakerySchema),
       },
+      {
+        children:
+          "window.traks=window.traks||function(){(window.traks.q=window.traks.q||[]).push(arguments)}",
+      },
+      {
+        defer: true,
+        src: "https://traks-collect.rocktown-labs.workers.dev/t.js",
+        "data-site": "pb_live_flxq80ww875wmua698zxjs77",
+      },
     ],
   }),
 
