@@ -8,11 +8,11 @@ import { createMiddleware, createStart } from "@tanstack/react-start";
  */
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  "script-src 'self' 'unsafe-inline' https://traks-collect.rocktown-labs.workers.dev",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",
-  "connect-src 'self'",
+  "connect-src 'self' https://traks-collect.rocktown-labs.workers.dev",
   "form-action 'self' https://checkout.stripe.com",
   "frame-src https://js.stripe.com https://hooks.stripe.com",
   "object-src 'none'",
