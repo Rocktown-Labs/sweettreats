@@ -17,7 +17,9 @@
     "enabled": true,
   },
   "vars": {
-    "ADMIN_EMAILS": "lauryan0311@gmail.com,admin@sweettreatslr.com",
+    // Local-only bootstrap roster. Set real addresses in .dev.vars
+    // (gitignored) — never commit personal addresses here.
+    "ADMIN_EMAILS": "",
     "BETTER_AUTH_URL": "http://localhost:8787",
   },
   // wrangler's esbuild bundles ./worker.ts without the TanStack Start vite

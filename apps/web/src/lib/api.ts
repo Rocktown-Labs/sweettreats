@@ -1502,13 +1502,21 @@ export const createOrder = createServerFn({ method: "POST" })
       orderPersisted = true;
 
       // Recovering this cart (if tracked) marks it won-back for the admin
-      // view and suppresses any pending abandonment email.
+      // view and suppresses any pending abandonment email. Only the cart's
+      // owner may claim that recovery: the cart id is a bearer value, and an
+      // unrelated caller must not be able to suppress someone else's email.
       if (data.clientOrderId) {
-        await db
-          .update(cartSnapshotsTable)
-          .set({ recoveredAt: sql`CURRENT_TIMESTAMP`, updatedAt: sql`CURRENT_TIMESTAMP` })
-          .where(eq(cartSnapshotsTable.id, data.clientOrderId))
-          .catch(() => {});
+        try {
+          if (await canMutateCartSnapshot(db, data.clientOrderId, userId, data.email)) {
+            await db
+              .update(cartSnapshotsTable)
+              .set({ recoveredAt: sql`CURRENT_TIMESTAMP`, updatedAt: sql`CURRENT_TIMESTAMP` })
+              .where(eq(cartSnapshotsTable.id, data.clientOrderId))
+              .catch(() => {});
+          }
+        } catch {
+          // Recovery annotation is best-effort; never fail a placed order.
+        }
       }
       if (enqueueConfirmation) {
         await queueSend({ outboxId }).catch(() => {});
@@ -2113,7 +2121,7 @@ const trackCartSchema = z.object({
  * snapshot that already belongs to a different account (or to a signed-in
  * customer, when the caller is a guest). Missing snapshots are claimable.
  */
-async function canMutateCartSnapshot(
+export async function canMutateCartSnapshot(
   db: ReturnType<typeof createDb>,
   clientOrderId: string,
   userId: string | null,

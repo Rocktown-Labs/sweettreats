@@ -9,8 +9,7 @@ desk at **sweettreatslr.com**. Nothing here needs a developer.
 ## 1. Sign in to the shop desk
 
 - [ ] Go to **sweettreatslr.com/sign-in**
-- [ ] Sign in with your Google account (the one the site was set up for:
-      lauryan0311@gmail.com)
+- [ ] Sign in with your Google account (the one the site was set up for)
 - [ ] You should land on **Admin → Overview**. If you ever type the admin
       address while logged out, it looks like a missing page on purpose —
       just sign in first.
