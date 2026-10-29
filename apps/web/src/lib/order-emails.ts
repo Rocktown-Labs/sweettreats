@@ -9,6 +9,7 @@ import {
 } from "@sweettreats/email";
 import { logger } from "./logger";
 import { getOrderNotificationEmails } from "./notifications";
+import { createOrderToken } from "./order-token";
 import { env } from "@sweettreats/env/server";
 
 function readEnv(key: string): string {
@@ -87,42 +88,48 @@ export async function sendOrderNotifications(orderId: string) {
       .filter((part) => part && part.trim().length > 0)
       .join("\n");
 
-    // 1. Send shop notification (location contact, or admins)
-    const adminResult = await sendAdminOrderEmail(
-      {
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        customerName: order.customerName,
-        customerEmail: order.customerEmail,
-        customerPhone: order.customerPhone,
-        ...(isShipping
-          ? {
-              shippingAddress: shippingAddressText,
-              shippingServiceName: order.shippingServiceName,
-              shippingTotalCents: order.shippingCents + order.handlingCents,
-              pickupLocationName: "Shipped",
-              pickupDate: "",
-              pickupTime: "",
-            }
-          : {
-              pickupLocationName:
-                order.pickupLocationName || order.pickupLocation?.name || "Little Rock Pickup (LR)",
-              pickupLocationAddress: order.pickupLocation?.address || "",
-              pickupDate: order.pickupDate,
-              pickupTime: order.pickupTime,
-            }),
-        notes: order.notes,
-        subtotalCents: order.subtotalCents,
-        paymentStatus: order.paymentStatus === "paid" ? "paid" : "confirmed",
-        items: itemsProps,
-        adminDashboardUrl: `${baseUrl}/admin/orders/${order.id}`,
-      },
-      {
-        to: shopRecipients,
-        from: fromEmail,
-        apiKey: resendApiKey,
-      },
-    );
+    // 1. Send shop notification (location contact, or admins). An empty
+    // roster means there is nowhere to route it — skip rather than throw.
+    const adminResult =
+      shopRecipients.length > 0
+        ? await sendAdminOrderEmail(
+            {
+              orderId: order.id,
+              orderNumber: order.orderNumber,
+              customerName: order.customerName,
+              customerEmail: order.customerEmail,
+              customerPhone: order.customerPhone,
+              ...(isShipping
+                ? {
+                    shippingAddress: shippingAddressText,
+                    shippingServiceName: order.shippingServiceName,
+                    shippingTotalCents: order.shippingCents + order.handlingCents,
+                    pickupLocationName: "Shipped",
+                    pickupDate: "",
+                    pickupTime: "",
+                  }
+                : {
+                    pickupLocationName:
+                      order.pickupLocationName ||
+                      order.pickupLocation?.name ||
+                      "Little Rock Pickup (LR)",
+                    pickupLocationAddress: order.pickupLocation?.address || "",
+                    pickupDate: order.pickupDate,
+                    pickupTime: order.pickupTime,
+                  }),
+              notes: order.notes,
+              subtotalCents: order.subtotalCents,
+              paymentStatus: order.paymentStatus === "paid" ? "paid" : "confirmed",
+              items: itemsProps,
+              adminDashboardUrl: `${baseUrl}/admin/orders/${order.id}`,
+            },
+            {
+              to: shopRecipients,
+              from: fromEmail,
+              apiKey: resendApiKey,
+            },
+          )
+        : { success: true, mocked: true };
 
     // 2. Send customer order confirmation (if customer email provided)
     let customerResult: import("@sweettreats/email").SendEmailResult = {
@@ -130,6 +137,10 @@ export async function sendOrderNotifications(orderId: string) {
       mocked: true,
     };
     if (order.customerEmail) {
+      // Guest customers have no session, so the confirmation link needs the
+      // same capability token the success page uses. Without it the link
+      // always lands on "Order not found".
+      const orderToken = await createOrderToken(order.id);
       customerResult = await sendCustomerOrderEmail(
         {
           orderNumber: order.orderNumber,
@@ -159,7 +170,7 @@ export async function sendOrderNotifications(orderId: string) {
             quantity: i.quantity,
             lineTotalCents: i.lineTotalCents,
           })),
-          viewOrderUrl: `${baseUrl}/order/success?orderId=${order.id}`,
+          viewOrderUrl: `${baseUrl}/order/success?orderId=${order.id}&t=${orderToken}`,
         },
         {
           to: order.customerEmail,

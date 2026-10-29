@@ -21,12 +21,19 @@ jobs:
   deploy:
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
+    # Configure these environments in GitHub → Settings → Environments.
+    # "production" should require reviewers; "preview" should use a
+    # preview-scoped Cloudflare token. Deploy code is PR-controlled, so an
+    # unreviewed same-repo branch must never receive the production token.
+    environment: ${{ github.ref == 'refs/heads/master' && 'production' || 'preview' }}
     permissions:
       contents: read
       pull-requests: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -47,6 +54,15 @@ jobs:
             echo "STAGE_BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           fi
 
+      - name: Warn when previews use the production Cloudflare token
+        if: env.STAGE != 'prod'
+        env:
+          PREVIEW_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+        run: |
+          if [ -z "$PREVIEW_TOKEN" ]; then
+            echo "::warning::CLOUDFLARE_PREVIEW_API_TOKEN is not set — preview deploys are using the production Cloudflare token. Add a preview-scoped token so PR code cannot reach production resources."
+          fi
+
       - name: Deploy with Alchemy
         run: bun --cwd packages/infra alchemy deploy --stage ${{ env.STAGE }} --yes
         env:
@@ -56,7 +72,10 @@ jobs:
           # Worker on every run. GitHub normally sets CI=true, but we pin it
           # so the mode never depends on runner defaults.
           CI: "true"
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Prefer a preview-scoped token for non-prod stages; fall back to
+          # the prod token only so existing deployments keep working. Add
+          # CLOUDFLARE_PREVIEW_API_TOKEN to remove the fallback.
+          CLOUDFLARE_API_TOKEN: ${{ env.STAGE == 'prod' && secrets.CLOUDFLARE_API_TOKEN || (secrets.CLOUDFLARE_PREVIEW_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN) }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           BETTER_AUTH_SECRET: ${{ env.STAGE_BETTER_AUTH_SECRET }}
           # Production-only integrations: previews deploy with these empty so
@@ -110,12 +129,15 @@ jobs:
   cleanup:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
+    environment: preview
     permissions:
       contents: read
       pull-requests: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -134,7 +156,7 @@ jobs:
         run: bun --cwd packages/infra alchemy destroy --stage ${{ env.STAGE }} --yes
         env:
           CI: "true"
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           # Destroy only reads state; no production secret is ever needed here.
           BETTER_AUTH_SECRET: destroy-only-placeholder-not-a-real-secret

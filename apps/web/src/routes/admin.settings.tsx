@@ -279,7 +279,7 @@ function AdminSettingsPage() {
         <textarea
           rows={2}
           value={notificationEmails}
-          placeholder="admin@sweettreatslr.com, lauryan0311@gmail.com"
+          placeholder="orders@your-shop.example, owner@your-shop.example"
           onChange={(event) => setNotificationEmails(event.target.value)}
           style={{ width: "100%" }}
           aria-label="Order notification email addresses, comma separated"

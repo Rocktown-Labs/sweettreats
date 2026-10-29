@@ -27,6 +27,11 @@ export interface SendEmailResult {
 
 const DEFAULT_FROM_EMAIL = "Sweet Treats LR <noreply@orders.sweettreatslr.com>";
 
+/** Keep recipient addresses and message bodies out of logs. */
+function redactEmailAddresses(message: string): string {
+  return message.replace(/[^\s<>]+@[^\s<>]+\.[^\s<>]+/g, "[recipient]");
+}
+
 export async function sendAdminOrderEmail(
   props: AdminOrderNotificationEmailProps,
   options?: {
@@ -35,11 +40,12 @@ export async function sendAdminOrderEmail(
     apiKey?: string;
   },
 ): Promise<SendEmailResult> {
-  const recipients = options?.to
-    ? Array.isArray(options.to)
-      ? options.to
-      : [options.to]
-    : ["lauryan0311@gmail.com", "admin@sweettreatslr.com"];
+  // Never fall back to a hard-coded address: an order notification must go
+  // exactly where the caller (location contact or admin roster) routed it.
+  if (!options?.to || (Array.isArray(options.to) && options.to.length === 0)) {
+    throw new Error("sendAdminOrderEmail requires at least one recipient");
+  }
+  const recipients = Array.isArray(options.to) ? options.to : [options.to];
 
   const from = options?.from || DEFAULT_FROM_EMAIL;
   const resend = getResendClient(options?.apiKey);
@@ -56,8 +62,7 @@ export async function sendAdminOrderEmail(
         event: "email.admin_order_notification_simulated",
         orderId: props.orderId,
         orderNumber: props.orderNumber,
-        recipients,
-        subject,
+        recipientCount: recipients.length,
       }),
     );
     return { success: true, mocked: true };
@@ -81,7 +86,7 @@ export async function sendAdminOrderEmail(
       JSON.stringify({
         event: "email.admin_order_notification_failed",
         orderId: props.orderId,
-        error: error.message,
+        error: redactEmailAddresses(error.message),
       }),
     );
     return { success: false, error: error.message };
@@ -113,8 +118,6 @@ export async function sendCustomerOrderEmail(
         event: "email.customer_order_confirmation_simulated",
         orderId: props.orderId,
         orderNumber: props.orderNumber,
-        to: options.to,
-        subject,
       }),
     );
     return { success: true, mocked: true };
@@ -138,7 +141,7 @@ export async function sendCustomerOrderEmail(
       JSON.stringify({
         event: "email.customer_order_confirmation_failed",
         orderId: props.orderId,
-        error: error.message,
+        error: redactEmailAddresses(error.message),
       }),
     );
     return { success: false, error: error.message };
@@ -168,7 +171,6 @@ export async function sendVerifyEmail(
     console.info(
       JSON.stringify({
         event: "email.verify_email_simulated",
-        to: options.to,
       }),
     );
     return { success: true, mocked: true };
@@ -186,8 +188,7 @@ export async function sendVerifyEmail(
     console.error(
       JSON.stringify({
         event: "email.verify_email_failed",
-        to: options.to,
-        error: error.message,
+        error: redactEmailAddresses(error.message),
       }),
     );
     return { success: false, error: error.message };
@@ -217,7 +218,6 @@ export async function sendWelcomeEmail(
     console.info(
       JSON.stringify({
         event: "email.welcome_simulated",
-        to: options.to,
       }),
     );
     return { success: true, mocked: true };
@@ -240,8 +240,7 @@ export async function sendWelcomeEmail(
     console.error(
       JSON.stringify({
         event: "email.welcome_failed",
-        to: options.to,
-        error: error.message,
+        error: redactEmailAddresses(error.message),
       }),
     );
     return { success: false, error: error.message };
@@ -272,7 +271,6 @@ export async function sendAbandonedCartEmail(
     console.info(
       JSON.stringify({
         event: "email.abandoned_cart_simulated",
-        to: options.to,
         cartId: options.cartId,
       }),
     );
@@ -298,9 +296,8 @@ export async function sendAbandonedCartEmail(
     console.error(
       JSON.stringify({
         event: "email.abandoned_cart_failed",
-        to: options.to,
         cartId: options.cartId,
-        error: error.message,
+        error: redactEmailAddresses(error.message),
       }),
     );
     return { success: false, error: error.message };
@@ -330,8 +327,6 @@ export async function sendMagicLinkEmail(
     console.info(
       JSON.stringify({
         event: "email.magic_link_simulated",
-        to: options.to,
-        url: props.url,
       }),
     );
     return { success: true, mocked: true };
@@ -349,8 +344,7 @@ export async function sendMagicLinkEmail(
     console.error(
       JSON.stringify({
         event: "email.magic_link_failed",
-        to: options.to,
-        error: error.message,
+        error: redactEmailAddresses(error.message),
       }),
     );
     return { success: false, error: error.message };
@@ -381,8 +375,6 @@ export async function sendCustomerShippedEmail(
       JSON.stringify({
         event: "email.customer_order_shipped_simulated",
         orderNumber: props.orderNumber,
-        to: options.to,
-        subject,
       }),
     );
     return { success: true, mocked: true };
@@ -406,7 +398,7 @@ export async function sendCustomerShippedEmail(
       JSON.stringify({
         event: "email.customer_order_shipped_failed",
         orderNumber: props.orderNumber,
-        error: error.message,
+        error: redactEmailAddresses(error.message),
       }),
     );
     return { success: false, error: error.message };
@@ -437,8 +429,6 @@ export async function sendCustomerDeliveredEmail(
       JSON.stringify({
         event: "email.customer_order_delivered_simulated",
         orderNumber: props.orderNumber,
-        to: options.to,
-        subject,
       }),
     );
     return { success: true, mocked: true };
@@ -462,7 +452,7 @@ export async function sendCustomerDeliveredEmail(
       JSON.stringify({
         event: "email.customer_order_delivered_failed",
         orderNumber: props.orderNumber,
-        error: error.message,
+        error: redactEmailAddresses(error.message),
       }),
     );
     return { success: false, error: error.message };

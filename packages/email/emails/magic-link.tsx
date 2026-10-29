@@ -94,7 +94,7 @@ export default function MagicLinkEmail({
 
 MagicLinkEmail.PreviewProps = {
   url: "https://sweettreatslr.com/api/auth/magic-link/verify?token=sample-token-123",
-  email: "lauryan0311@gmail.com",
+  email: "customer@example.com",
   isNewAccount: false,
 } satisfies MagicLinkEmailProps;
 

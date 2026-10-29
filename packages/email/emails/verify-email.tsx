@@ -91,7 +91,7 @@ export default function VerifyEmail({
 
 VerifyEmail.PreviewProps = {
   url: "https://sweettreatslr.com/api/auth/verify-email?token=sample-token-123",
-  email: "lauryan0311@gmail.com",
+  email: "customer@example.com",
 } satisfies VerifyEmailProps;
 
 // Styles

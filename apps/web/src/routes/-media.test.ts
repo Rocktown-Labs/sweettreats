@@ -28,6 +28,18 @@ describe("media route", () => {
     );
   });
 
+  it("never redirects off-origin for a protocol-relative splat", async () => {
+    const response = await handleMediaGet({
+      media: null,
+      request: new Request("https://sweet.test/media//evil.example"),
+      splat: "/evil.example",
+    });
+
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.get("location")!);
+    expect(location.origin).toBe("https://sweet.test");
+  });
+
   it("redirects missing product images to their bundled fallback path", async () => {
     const response = await handleMediaGet({
       media: { get: vi.fn(async () => null) },

@@ -20,6 +20,7 @@ import { z } from "zod";
 
 import { currentUserEmail, requireAdmin, adminEmails } from "./auth-server";
 import { createOrderToken, verifyOrderToken } from "./order-token";
+import { dailyAvailability } from "./menu-availability";
 import { releaseReservedLines } from "./inventory";
 import { publishAdminEvent } from "../realtime/publish";
 import { clientIpFromHeaders, rateLimit } from "./rate-limit";
@@ -53,6 +54,7 @@ import {
   getStripeClient,
   stripeClientFor,
 } from "./stripe-client";
+import { stripeAmountMatches } from "./stripe-amounts";
 import {
   INTEGRATION_KEY_IDS,
   integrationKeyStatus,
@@ -77,10 +79,10 @@ const cartLineSchema = z.object({
 });
 
 const shippingAddressSchema = z.object({
-  name: z.string().min(2, "Enter the recipient's name."),
-  line1: z.string().min(3, "Enter a street address."),
+  name: z.string().min(2, "Enter the recipient's name.").max(100),
+  line1: z.string().min(3, "Enter a street address.").max(200),
   line2: z.string().max(200).optional().default(""),
-  city: z.string().min(2, "Enter a city."),
+  city: z.string().min(2, "Enter a city.").max(100),
   state: z.string().length(2, "Enter a 2-letter state."),
   zip: z.string().regex(/^\d{5}(-\d{4})?$/, "Enter a valid ZIP code."),
   country: z.literal("US").optional().default("US"),
@@ -88,15 +90,15 @@ const shippingAddressSchema = z.object({
 
 const checkoutSchema = z
   .object({
-    name: z.string().min(2),
-    email: z.string().email(),
+    name: z.string().min(2).max(100),
+    email: z.string().email().max(254),
     phone: z.string().regex(/^\+?[0-9()\-\s]{7,20}$/, "Enter a valid phone number."),
     notes: z.string().max(500).optional().default(""),
     items: z.array(cartLineSchema).min(1).max(50),
     /** Stable per-cart id from the browser; duplicate submits replay the same order. */
     clientOrderId: z.string().uuid().optional(),
     // Pickup details (required when not shipping)
-    pickupLocationId: z.string().optional(),
+    pickupLocationId: z.string().max(100).optional(),
     pickupDate: z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/, "Choose a valid pickup date.")
@@ -132,10 +134,10 @@ const adminRatePreviewSchema = z.object({
     .max(70 * 16)
     .optional(),
   address: z.object({
-    name: z.string().min(2),
-    line1: z.string().min(3),
-    line2: z.string().optional().default(""),
-    city: z.string().min(2),
+    name: z.string().min(2).max(100),
+    line1: z.string().min(3).max(200),
+    line2: z.string().max(200).optional().default(""),
+    city: z.string().min(2).max(100),
     state: z.string().length(2),
     zip: z.string().regex(/^\d{5}(-\d{4})?$/),
     country: z.literal("US").optional().default("US"),
@@ -144,10 +146,10 @@ const adminRatePreviewSchema = z.object({
 
 const pickupLocationSchema = z.object({
   id: z.string().optional(),
-  name: z.string().min(2, "Location name is required"),
-  address: z.string().min(3, "Address is required"),
-  instructions: z.string().optional().default(""),
-  phone: z.string().optional().default(""),
+  name: z.string().min(2, "Location name is required").max(120),
+  address: z.string().min(3, "Address is required").max(300),
+  instructions: z.string().max(1000).optional().default(""),
+  phone: z.string().max(30).optional().default(""),
   contactEmail: z
     .string()
     .refine((value) => value === "" || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value), {
@@ -221,26 +223,27 @@ const itemSchema = z.object({
 });
 
 const uploadSchema = z.object({
-  fileName: z.string().min(1),
-  contentType: z.string().min(3),
-  base64: z.string().min(1),
+  fileName: z.string().min(1).max(200),
+  contentType: z.string().min(3).max(100),
+  // 5 MB decoded ≈ 7 MB as base64; reject obvious overruns before atob().
+  base64: z.string().min(1).max(7_000_000),
 });
 
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/avif"]);
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 const dailyMenuSchema = z.object({
-  menuItemId: z.string().min(1),
-  menuDate: z.string().min(10),
+  menuItemId: z.string().min(1).max(100),
+  menuDate: z.string().min(10).max(10),
   availableOverride: z.boolean().nullable(),
   featuredOverride: z.boolean().nullable(),
-  note: z.string().optional().default(""),
+  note: z.string().max(500).optional().default(""),
 });
 
 const weeklyMenuSchema = z.object({
-  weekStart: z.string().min(10),
-  itemDays: z.record(z.string(), z.array(z.string().min(10))).default({}),
-  closedDates: z.array(z.string().min(10)).default([]),
+  weekStart: z.string().min(10).max(10),
+  itemDays: z.record(z.string().max(100), z.array(z.string().min(10).max(10)).max(31)).default({}),
+  closedDates: z.array(z.string().min(10).max(10)).max(31).default([]),
 });
 
 function normalizeSlug(value: string) {
@@ -254,6 +257,44 @@ function normalizeSlug(value: string) {
 type MenuDaySettings = typeof shopDaySettings.$inferSelect;
 type MenuItemRow = typeof menuItems.$inferSelect;
 type DailyMenuRow = typeof dailyMenuItems.$inferSelect;
+
+/**
+ * Daily menu overrides for one date. `availableOverride` is the admin's
+ * per-day switch: true = force available, false = sold out today, null =
+ * inherit the item's global flag. Checkout must apply exactly the same rule
+ * as the storefront, otherwise a crafted request can order an item the shop
+ * marked unavailable for that day.
+ */
+async function loadDailyAvailability(
+  db: ReturnType<typeof createDb>,
+  date: string,
+  itemIds: string[],
+): Promise<Map<string, boolean | null>> {
+  const overrides = new Map<string, boolean | null>();
+  if (!date || itemIds.length === 0) {
+    return overrides;
+  }
+  const rows = await db
+    .select({
+      menuItemId: dailyMenuItems.menuItemId,
+      availableOverride: dailyMenuItems.availableOverride,
+    })
+    .from(dailyMenuItems)
+    .where(and(eq(dailyMenuItems.menuDate, date), inArray(dailyMenuItems.menuItemId, itemIds)));
+  for (const row of rows) {
+    overrides.set(row.menuItemId, row.availableOverride);
+  }
+  return overrides;
+}
+
+/** A day explicitly closed by the admin cannot accept pickup orders. */
+async function isPickupDayClosed(db: ReturnType<typeof createDb>, date: string): Promise<boolean> {
+  const day = await db.query.shopDaySettings.findFirst({
+    where: eq(shopDaySettings.dayDate, date),
+    columns: { closed: true },
+  });
+  return Boolean(day?.closed);
+}
 
 /**
  * Resolve the first bookable menu on or after `startDate`, within the next
@@ -450,6 +491,31 @@ const seedMenu = [
 ] satisfies (typeof menuItems.$inferSelect)[];
 
 export type PickupLocation = typeof pickupLocations.$inferSelect;
+export type PublicPickupLocation = Omit<PickupLocation, "contactEmail">;
+
+/**
+ * Public projection for a pickup location. `contactEmail` is internal
+ * notification routing (vendor address) and must never be serialized to an
+ * anonymous storefront visitor.
+ */
+export function publicPickupLocation(location: PickupLocation): PublicPickupLocation {
+  const { contactEmail: _contactEmail, ...publicLocation } = location;
+  return publicLocation;
+}
+
+/**
+ * Order responses to customers carry the pickup location's public fields
+ * only — same rule as the storefront location endpoints.
+ */
+function withoutPickupContactEmail<T extends { pickupLocation: { contactEmail?: string } | null }>(
+  order: T,
+): T {
+  if (!order.pickupLocation) {
+    return order;
+  }
+  const { contactEmail: _contactEmail, ...pickupLocation } = order.pickupLocation;
+  return { ...order, pickupLocation } as T;
+}
 
 export const seedPickupLocations: PickupLocation[] = [
   {
@@ -791,7 +857,7 @@ export const getPickupAvailability = createServerFn({ method: "GET" }).handler(a
     return {
       pickupDate: shopDateIso(),
       closed: false,
-      locations: seedPickupLocations.filter((l) => l.active),
+      locations: seedPickupLocations.filter((l) => l.active).map(publicPickupLocation),
     };
   }
 
@@ -804,17 +870,17 @@ export const getPickupAvailability = createServerFn({ method: "GET" }).handler(a
   return {
     pickupDate: menu.menuDate,
     closed: menu.closed,
-    locations: allLocations.filter((l) => l.active),
+    locations: allLocations.filter((l) => l.active).map(publicPickupLocation),
   };
 });
 
 export const getPickupLocations = createServerFn({ method: "GET" }).handler(async () => {
   if (!hasDatabase()) {
-    return seedPickupLocations.filter((l) => l.active);
+    return seedPickupLocations.filter((l) => l.active).map(publicPickupLocation);
   }
   const db = createDb();
   const all = await getOrCreatePickupLocations(db);
-  return all.filter((l) => l.active);
+  return all.filter((l) => l.active).map(publicPickupLocation);
 });
 
 export const getAdminPickupLocations = createServerFn({ method: "GET" }).handler(async () => {
@@ -967,8 +1033,19 @@ export const getAdminMenuItem = createServerFn({ method: "GET" })
  * Idempotent replay support: an order created earlier with the same stable
  * cart id is returned as-is. The order token is a deterministic HMAC of the
  * order id, so the success URL can be rebuilt exactly.
+ *
+ * The cart id is a bearer value, but it is not enough on its own to hand a
+ * caller an order capability token: the replay must also match the order's
+ * customer email (and signed-in user, when both sides have one). This keeps
+ * a leaked/observed cart id from becoming an order-PII read for a different
+ * checkout.
  */
-async function replayExistingOrder(db: ReturnType<typeof createDb>, clientOrderId: string) {
+async function replayExistingOrder(
+  db: ReturnType<typeof createDb>,
+  clientOrderId: string,
+  email: string,
+  userId: string | null,
+) {
   const existing = await db.query.orders.findFirst({
     where: eq(orders.clientOrderId, clientOrderId),
     columns: {
@@ -978,10 +1055,22 @@ async function replayExistingOrder(db: ReturnType<typeof createDb>, clientOrderI
       stripeCheckoutSessionId: true,
       status: true,
       paymentStatus: true,
+      customerEmail: true,
+      userId: true,
     },
   });
   if (!existing) {
     return null;
+  }
+  if (existing.customerEmail.trim().toLowerCase() !== email.trim().toLowerCase()) {
+    throw new Error(
+      "This cart is already attached to a different order. Refresh your cart and try again.",
+    );
+  }
+  if (existing.userId && userId && existing.userId !== userId) {
+    throw new Error(
+      "This cart is already attached to a different account. Refresh your cart and try again.",
+    );
   }
   const orderToken = await createOrderToken(existing.id);
   // Rebuild the same result shape createOrder returns, with a fresh Stripe
@@ -1013,11 +1102,15 @@ export const createOrder = createServerFn({ method: "POST" })
       throw new Error("Too many orders sent from this connection. Try again in a few minutes.");
     }
 
+    // Resolve the caller before replay so an idempotent retry can be bound to
+    // the same customer/account as the original order.
+    const { userId } = await currentUserEmail();
+
     // Idempotent replay: a retry with the same stable cart id returns the
     // original order instead of creating (and charging inventory for) a
     // second one.
     if (data.clientOrderId) {
-      const existing = await replayExistingOrder(db, data.clientOrderId);
+      const existing = await replayExistingOrder(db, data.clientOrderId, data.email, userId);
       if (existing) {
         logger.info("order.idempotent_replay", { orderId: existing.orderId });
         return existing;
@@ -1033,12 +1126,19 @@ export const createOrder = createServerFn({ method: "POST" })
     if (!isShipping) {
       const today = shopDateIso();
       const maxDate = addDaysIso(today, PICKUP_WINDOW_DAYS);
-      if (!data.pickupDate || data.pickupDate < today || data.pickupDate > maxDate) {
+      const requestedDate = data.pickupDate;
+      const requestedTime = data.pickupTime;
+      if (!requestedDate || requestedDate < today || requestedDate > maxDate) {
         throw new Error("Choose a pickup date within the next 30 days.");
       }
-      if (!data.pickupTime || !isPickupSlotBookable(data.pickupDate, data.pickupTime)) {
+      if (!requestedTime || !isPickupSlotBookable(requestedDate, requestedTime)) {
         throw new Error("That pickup time is not available. Pick another slot.");
       }
+      if (await isPickupDayClosed(db, requestedDate)) {
+        throw new Error("The shop is closed on that date. Choose another day.");
+      }
+      pickupDate = requestedDate;
+      pickupTime = requestedTime;
     }
 
     const ids = data.items.map((item) => item.id);
@@ -1058,6 +1158,21 @@ export const createOrder = createServerFn({ method: "POST" })
         }
       }
     }
+
+    // Pickup orders must respect the same per-day availability the storefront
+    // shows: the chosen day's overrides apply to cart lines AND to the
+    // cookies inside packs. Shipping orders have no menu date, so they use
+    // the item's global flag.
+    const dailyOverrides = isShipping
+      ? new Map<string, boolean | null>()
+      : await loadDailyAvailability(db, pickupDate, [
+          ...new Set([
+            ...ids,
+            ...[...contentsByPackId.values()].flatMap((contents) =>
+              contents.map((content) => content.cookieItemId),
+            ),
+          ]),
+        ]);
 
     // Every order draws from exactly one location's pool: the chosen pickup
     // spot, or the primary location for shipping orders. Falls back to the
@@ -1092,7 +1207,8 @@ export const createOrder = createServerFn({ method: "POST" })
         : null;
 
     const isLineSellable = (item: (typeof foundItems)[number], quantity: number) => {
-      if (!item.available) {
+      const itemAvailable = dailyAvailability(dailyOverrides.get(item.id), item.available);
+      if (!itemAvailable) {
         return false;
       }
       const stockAt = (itemId: string) =>
@@ -1103,16 +1219,27 @@ export const createOrder = createServerFn({ method: "POST" })
         // the pack row's own inventory flags never apply. (byId only holds
         // cart line ids, so resolve via content.cookie.)
         if (contents.length > 0) {
-          const locatedContents =
-            locationStock != null
-              ? contents.map((content) => ({
-                  ...content,
-                  cookie: content.cookie
-                    ? { ...content.cookie, inventoryQuantity: stockAt(content.cookieItemId) }
-                    : content.cookie,
-                }))
-              : contents;
-          const stock = derivePackStock(item, locatedContents);
+          const locatedContents = contents.map((content) => {
+            const cookie = content.cookie;
+            if (!cookie) {
+              return content;
+            }
+            return {
+              ...content,
+              cookie: {
+                ...cookie,
+                // Apply the day's override to the cookie inside the pack too
+                // — the same rule the storefront uses for pack availability.
+                available: dailyAvailability(
+                  dailyOverrides.get(content.cookieItemId),
+                  cookie.available,
+                ),
+                inventoryQuantity:
+                  locationStock != null ? stockAt(content.cookieItemId) : cookie.inventoryQuantity,
+              },
+            };
+          });
+          const stock = derivePackStock({ ...item, available: itemAvailable }, locatedContents);
           return stock.available && (!stock.trackInventory || stock.inventoryQuantity >= quantity);
         }
         // Content-less packs (manual weight) sell from their own row.
@@ -1162,7 +1289,6 @@ export const createOrder = createServerFn({ method: "POST" })
     }
 
     const subtotalCents = lines.reduce((sum, line) => sum + line.lineTotalCents, 0);
-    const { userId } = await currentUserEmail();
     // Attach the payment to the shop's Stripe Customer when we know one
     // (better-auth creates it on signup via the stripe plugin).
     let stripeCustomerId: string | null = null;
@@ -1180,11 +1306,6 @@ export const createOrder = createServerFn({ method: "POST" })
     // Set once the order rows are durably written, so the failure path knows
     // whether to cancel the persisted order (see the catch below).
     let orderPersisted = false;
-    if (!isShipping) {
-      const pickupMenu = await nextAvailableMenu(db, data.pickupDate ?? shopDateIso());
-      pickupDate = pickupMenu.menuDate;
-      pickupTime = data.pickupTime ?? "";
-    }
 
     // Reservation units, aggregated per line (packs expand into their
     // cookies, and two packs can share a cookie). Each line's snapshot of
@@ -1596,8 +1717,16 @@ export const createOrder = createServerFn({ method: "POST" })
     }
   });
 
+const orderLookupSchema = z.object({
+  // Bound every public lookup field: these arrive unauthenticated and feed
+  // DB queries / HMAC comparisons.
+  id: z.string().min(1).max(100),
+  token: z.string().max(128).optional(),
+  sessionId: z.string().max(200).optional(),
+});
+
 export const getOrder = createServerFn({ method: "GET" })
-  .validator((data: { id: string; token?: string; sessionId?: string }) => data)
+  .validator((data: unknown) => orderLookupSchema.parse(data))
   .handler(async ({ data }) => {
     const db = dbRequired();
     let order = await db.query.orders.findFirst({
@@ -1632,7 +1761,7 @@ export const getOrder = createServerFn({ method: "GET" })
       if (stripe) {
         try {
           const session = await stripe.checkout.sessions.retrieve(data.sessionId);
-          if (session.payment_status === "paid") {
+          if (session.payment_status === "paid" && stripeAmountMatches(order, session)) {
             await db
               .update(orders)
               .set({
@@ -1647,6 +1776,14 @@ export const getOrder = createServerFn({ method: "GET" })
               where: eq(orders.id, data.id),
               with: { items: true, pickupLocation: true },
             });
+          } else if (session.payment_status === "paid") {
+            // Paid, but the amount does not reconcile to this order. Do not
+            // confirm it from a GET path; the signed webhook is the authority
+            // and will log the mismatch for the shop.
+            logger.error("stripe.get_order_amount_mismatch", {
+              orderId: data.id,
+              charged: session.amount_total ?? 0,
+            });
           }
         } catch (err) {
           logger.error("stripe.retrieve_failed", {
@@ -1656,7 +1793,7 @@ export const getOrder = createServerFn({ method: "GET" })
       }
     }
 
-    return order ?? null;
+    return order ? withoutPickupContactEmail(order) : null;
   });
 
 /* ------------------------------------------------------------------ */
@@ -1852,10 +1989,10 @@ export const getAdminShippingSettings = createServerFn({ method: "GET" }).handle
 const adminShippingSettingsSchema = z.object({
   fromAddress: z
     .object({
-      name: z.string().min(2),
-      street1: z.string().min(3),
-      street2: z.string().optional().default(""),
-      city: z.string().min(2),
+      name: z.string().min(2).max(100),
+      street1: z.string().min(3).max(200),
+      street2: z.string().max(200).optional().default(""),
+      city: z.string().min(2).max(100),
       state: z.string().length(2),
       zip: z.string().regex(/^\d{5}(-\d{4})?$/),
       country: z.literal("US").optional().default("US"),
@@ -1972,6 +2109,35 @@ const trackCartSchema = z.object({
 });
 
 /**
+ * A cart id is a bearer value. Do not let one browser overwrite or delete a
+ * snapshot that already belongs to a different account (or to a signed-in
+ * customer, when the caller is a guest). Missing snapshots are claimable.
+ */
+async function canMutateCartSnapshot(
+  db: ReturnType<typeof createDb>,
+  clientOrderId: string,
+  userId: string | null,
+  email: string | null,
+): Promise<boolean> {
+  const existing = await db.query.cartSnapshots.findFirst({
+    where: eq(cartSnapshotsTable.id, clientOrderId),
+    columns: { userId: true, email: true },
+  });
+  if (!existing) {
+    return true;
+  }
+  if (existing.userId && existing.userId !== userId) {
+    return false;
+  }
+  const existingEmail = existing.email.trim().toLowerCase();
+  const callerEmail = (email ?? "").trim().toLowerCase();
+  if (existingEmail && existingEmail !== callerEmail) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Debounced ping from the cart provider. Server-side prices only: item data
  * is re-loaded from the DB, never trusted from the client.
  */
@@ -1988,6 +2154,10 @@ export const trackCart = createServerFn({ method: "POST" })
     }
 
     const { userId, email } = await currentUserEmail();
+
+    if (!(await canMutateCartSnapshot(db, data.clientOrderId, userId, email))) {
+      return { ok: true, skipped: true };
+    }
 
     if (data.items.length === 0) {
       // Cart emptied: drop the snapshot so it stops counting as abandoned.
@@ -2113,11 +2283,11 @@ export const getIntegrationSettings = createServerFn({ method: "GET" }).handler(
 
 const saveIntegrationKeysSchema = z.object({
   /** Empty string = clear; undefined = leave unchanged. */
-  stripeSecret: z.string().trim().optional(),
-  stripePublishable: z.string().trim().optional(),
-  stripeWebhook: z.string().trim().optional(),
-  shippoApi: z.string().trim().optional(),
-  shippoWebhookToken: z.string().trim().optional(),
+  stripeSecret: z.string().trim().max(500).optional(),
+  stripePublishable: z.string().trim().max(500).optional(),
+  stripeWebhook: z.string().trim().max(500).optional(),
+  shippoApi: z.string().trim().max(500).optional(),
+  shippoWebhookToken: z.string().trim().max(500).optional(),
 });
 
 /**
@@ -2485,11 +2655,12 @@ export const getAccountOrders = createServerFn({ method: "GET" }).handler(async 
     return [];
   }
 
-  return db.query.orders.findMany({
+  const list = await db.query.orders.findMany({
     where: userId ? eq(orders.userId, userId) : eq(orders.customerEmail, email ?? ""),
     with: { items: true, pickupLocation: true },
     orderBy: desc(orders.createdAt),
   });
+  return list.map(withoutPickupContactEmail);
 });
 
 export const getAccountOrder = createServerFn({ method: "GET" })
@@ -2513,7 +2684,7 @@ export const getAccountOrder = createServerFn({ method: "GET" })
       with: { items: true, pickupLocation: true },
     });
 
-    return order ?? null;
+    return order ? withoutPickupContactEmail(order) : null;
   });
 
 /**
