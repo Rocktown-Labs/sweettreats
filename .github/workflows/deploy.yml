@@ -63,6 +63,12 @@ jobs:
             echo "::warning::CLOUDFLARE_PREVIEW_API_TOKEN is not set — preview deploys are using the production Cloudflare token. Add a preview-scoped token so PR code cannot reach production resources."
           fi
 
+      - name: Preflight Cloudflare token permissions
+        run: ./scripts/check-cf-token-permissions.sh
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ env.STAGE == 'prod' && secrets.CLOUDFLARE_API_TOKEN || (secrets.CLOUDFLARE_PREVIEW_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN) }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Deploy with Alchemy
         run: bun --cwd packages/infra alchemy deploy --stage ${{ env.STAGE }} --yes
         env:

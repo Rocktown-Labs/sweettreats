@@ -11,14 +11,17 @@ if [ -z "$TOKEN" ]; then
   echo ""
 fi
 
+FAILED=0
+
 check() {
   local label="$1" expect="$2"; shift 2
   local status
-  status=$(curl -s -o /dev/null -w "%{http_code}" "$@")
+  status=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" "$@")
   if [ "$status" = "$expect" ]; then
     echo "✓ $label ($status)"
   else
     echo "✗ $label — got $status (expected $expect)"
+    FAILED=1
   fi
 }
 
@@ -50,9 +53,16 @@ check "Edge-preview upload (Workers Scripts Write + Secrets Store Write)" 400 \
   "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/scripts/alchemy-state-store/edge-preview"
 
 echo ""
-echo "All ✓ → rerun the failed GitHub deploy run. Any ✗ → add that permission group"
-echo "in the Cloudflare dashboard (My Profile → API Tokens → your token → Edit):"
+echo "Any ✗ → add that permission group in the Cloudflare dashboard"
+echo "(My Profile → API Tokens → your token → Edit):"
 echo "  Account scope: Workers Scripts (Edit), Secrets Store (Edit), D1 (Edit),"
 echo "    Workers R2 Storage (Edit), Workers KV Storage (Edit), Queues (Edit),"
 echo "    Pages (Edit), Account Settings (Read+Edit), Workers Tail (Read)"
 echo "  Zone scope (sweettreatslr.com): Zone (Read), DNS (Edit), SSL and Certificates (Edit)"
+if [ "$FAILED" -ne 0 ]; then
+  echo ""
+  echo "✗ Cloudflare token preflight failed. Fix the permission(s) above and retry."
+  exit 1
+fi
+echo ""
+echo "All ✓ → rerun the failed GitHub deploy run."
