@@ -14,7 +14,7 @@ describe("Email Templates & Notifications", () => {
         orderId: "ord-test-1",
         orderNumber: "STLR-501",
         customerName: "Lauryan",
-        customerEmail: "lauryan0311@gmail.com",
+        customerEmail: "customer@example.com",
         customerPhone: "(501) 555-0142",
         pickupLocationName: "Little Rock Pickup (LR)",
         pickupDate: "2026-10-15",

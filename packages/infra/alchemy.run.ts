@@ -77,10 +77,10 @@ export const web = Cloudflare.Website.Vite(
         // Producer binding lives on prod only; preview workers enqueue
         // through the cron drain instead of racing prod's single consumer.
         ...(isProd ? { EMAIL_QUEUE: emailQueue } : {}),
-        ADMIN_EMAILS: Config.withDefault(
-          Config.String("ADMIN_EMAILS"),
-          "lauryan0311@gmail.com,admin@sweettreatslr.com",
-        ),
+        // No personal addresses in source. Set the ADMIN_EMAILS GitHub
+        // secret (comma-separated) to bootstrap the first verified admin;
+        // the database role remains the source of truth after that.
+        ADMIN_EMAILS: Config.withDefault(Config.String("ADMIN_EMAILS"), ""),
         BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
         BETTER_AUTH_URL: Config.withDefault(
           Config.String("BETTER_AUTH_URL"),

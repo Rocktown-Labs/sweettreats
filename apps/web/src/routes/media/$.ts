@@ -20,7 +20,17 @@ export async function handleMediaGet({
   request: Request;
   splat: string;
 }) {
-  const redirectTo = (path: string) => Response.redirect(new URL(path, request.url), 302);
+  const redirectTo = (path: string) => {
+    // Only ever redirect within this origin. A splat that starts with a
+    // second slash (`/media//evil.example`) would otherwise become a
+    // protocol-relative redirect when the media binding is absent.
+    const target = new URL(path, request.url);
+    const origin = new URL(request.url).origin;
+    return Response.redirect(
+      target.origin === origin ? target : new URL("/cookie-placeholder.svg", request.url),
+      302,
+    );
+  };
 
   if (!media) {
     return redirectTo(`/${splat}`);

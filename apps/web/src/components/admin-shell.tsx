@@ -26,7 +26,6 @@ import {
 } from "lucide-react";
 import type { CSSProperties, ReactNode } from "react";
 
-import { authClient } from "../lib/auth-client";
 import { useAdminNotifications } from "../lib/use-admin-notifications";
 
 const adminLinks = [
@@ -62,8 +61,6 @@ function NavBadge({ count }: { count: number }) {
  * (CSS decides which one is visible so there is no JS device sniffing or layout flash).
  */
 export function AdminShell({ children }: { children: ReactNode }) {
-  const { data: session } = authClient.useSession();
-  const isDemoSession = session?.user?.email?.toLowerCase() === "stlr@demo.com";
   // New-order badge: instant push + 20s polling, per useAdminNotifications.
   const { newOrderCount } = useAdminNotifications();
 
@@ -73,45 +70,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
       style={{ "--sidebar-width": "14rem" } as CSSProperties}
     >
       <AdminSidebar newOrderCount={newOrderCount} />
-      <main className="admin-content">
-        {isDemoSession ? (
-          <div
-            role="status"
-            style={{
-              margin: "0 0 16px 0",
-              padding: "12px 16px",
-              backgroundColor: "#fff8e7",
-              border: "1px solid #f6c453",
-              borderRadius: "10px",
-              fontSize: "0.88rem",
-              color: "#5c4939",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: "12px",
-              flexWrap: "wrap",
-            }}
-          >
-            <div>
-              <strong>Demo Administrator Account:</strong> You are logged in as{" "}
-              <code>stlr@demo.com</code>. Live order notifications are dispatched to{" "}
-              <strong>lauryan0311@gmail.com</strong>.
-            </div>
-            <Link
-              to="/sign-in"
-              style={{
-                fontSize: "0.82rem",
-                fontWeight: 700,
-                color: "#241408",
-                textDecoration: "underline",
-              }}
-            >
-              Switch Account
-            </Link>
-          </div>
-        ) : null}
-        {children}
-      </main>
+      <main className="admin-content">{children}</main>
       <AdminTabBar newOrderCount={newOrderCount} />
     </SidebarProvider>
   );

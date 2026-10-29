@@ -43,6 +43,16 @@ describe("order-token", () => {
     expect(await verifyOrderToken("order-1", "anything")).toBe(false);
     expect(await verifyOrderToken("order-1", undefined)).toBe(false);
   });
+
+  it("rejects oversized tokens without walking their full length", async () => {
+    const { verifyOrderToken } = await import("./order-token");
+    // A length mismatch is rejected before the comparison loop. This keeps
+    // an unauthenticated request from turning a huge `t` parameter into a
+    // proportional CPU burn.
+    expect(await verifyOrderToken("order-1", "a".repeat(2_000_000))).toBe(false);
+    expect(await verifyOrderToken("order-1", "a".repeat(31))).toBe(false);
+    expect(await verifyOrderToken("order-1", "a".repeat(33))).toBe(false);
+  });
 });
 
 describe("rate-limit", () => {

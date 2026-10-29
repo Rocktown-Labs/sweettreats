@@ -50,7 +50,12 @@ export function getAuth(): ReturnType<typeof betterAuth> {
   if (!authInstance) {
     const db = createDb();
     const stripeSecretKey = readEnv("STRIPE_SECRET_KEY");
-    const stripeWebhookSecret = readEnv("STRIPE_WEBHOOK_SECRET") || "dummy";
+    // Better Auth's Stripe plugin registers its own webhook route. This app
+    // fulfills payments in /api/stripe/webhook, so the plugin route is unused
+    // — but it still verifies signatures. Never give it a predictable
+    // fallback secret ("dummy"): use a random per-isolate value when the real
+    // signing secret is absent so forged plugin events can never verify.
+    const stripeWebhookSecret = readEnv("STRIPE_WEBHOOK_SECRET") || `unused-${crypto.randomUUID()}`;
     const stripeClient = stripeSecretKey
       ? new Stripe(stripeSecretKey, { apiVersion: "2023-10-16" as any })
       : null;

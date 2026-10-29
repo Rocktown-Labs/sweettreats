@@ -266,7 +266,7 @@ AdminOrderNotificationEmail.PreviewProps = {
   orderId: "ord-test-preview",
   orderNumber: "STLR-9042",
   customerName: "Lauryan",
-  customerEmail: "lauryan0311@gmail.com",
+  customerEmail: "customer@example.com",
   customerPhone: "(501) 555-0142",
   pickupLocationName: "Little Rock Pickup (Downtown LR)",
   pickupLocationAddress: "400 President Clinton Ave, Little Rock, AR 72201",

@@ -94,8 +94,6 @@ function SignInPage() {
     }
   };
 
-  const isDemoEmail = email.toLowerCase().trim() === "stlr@demo.com";
-
   return (
     <main className="auth-page">
       <section
@@ -189,25 +187,6 @@ function SignInPage() {
           <p className="form-error" role="alert" style={{ marginBottom: "16px" }}>
             {error}
           </p>
-        ) : null}
-
-        {isDemoEmail ? (
-          <div
-            style={{
-              padding: "10px 14px",
-              backgroundColor: "#fff8e7",
-              border: "1px solid #f6c453",
-              borderRadius: "8px",
-              fontSize: "0.85rem",
-              color: "#6b5847",
-              marginBottom: "16px",
-              lineHeight: "1.4",
-            }}
-          >
-            <strong>Legacy Demo Notice:</strong> <code>stlr@demo.com</code> is a demo account. The
-            official administrator email is <strong>lauryan0311@gmail.com</strong> or{" "}
-            <strong>admin@sweettreatslr.com</strong>.
-          </div>
         ) : null}
 
         {/* Magic Link Form */}

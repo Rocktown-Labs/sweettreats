@@ -3,8 +3,9 @@ import { cartSnapshots, orders } from "@sweettreats/db/schema/index";
 import { and, eq, lt, sql } from "drizzle-orm";
 
 import { releaseInventoryForOrder } from "../lib/inventory";
-import { reenqueueStaleOutboxRows, queueSend, enqueueEmail } from "../lib/outbox";
+import { reenqueueStaleOutboxRows, enqueueEmail } from "../lib/outbox";
 import { logger } from "../lib/logger";
+import { stripeAmountMatches } from "../lib/stripe-amounts";
 import { getStripeClient } from "../lib/stripe-client";
 
 /**
@@ -46,6 +47,10 @@ async function sweepStalePendingOrders(): Promise<void> {
     .select({
       id: orders.id,
       stripeCheckoutSessionId: orders.stripeCheckoutSessionId,
+      totalCents: orders.totalCents,
+      subtotalCents: orders.subtotalCents,
+      shippingCents: orders.shippingCents,
+      handlingCents: orders.handlingCents,
     })
     .from(orders)
     .where(and(eq(orders.status, "pending"), lt(orders.createdAt, cutoff)))
@@ -65,6 +70,13 @@ async function sweepStalePendingOrders(): Promise<void> {
     if (stripe && order.stripeCheckoutSessionId) {
       try {
         const session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
+        if (session.payment_status === "paid" && !stripeAmountMatches(order, session)) {
+          logger.error("cron.amount_mismatch", {
+            orderId: order.id,
+            charged: session.amount_total ?? 0,
+          });
+          continue;
+        }
         if (session.payment_status === "paid") {
           const confirmed = await db
             .update(orders)
@@ -158,7 +170,16 @@ async function sweepAbandonedCarts(): Promise<void> {
       continue;
     }
 
-    await queueSend({ event: "order.abandoned_cart", cartId: candidate.id }).catch((err) => {
+    // The queue consumer dispatches by outbox id; sending `{event, cartId}`
+    // directly made the consumer ack the message without sending anything.
+    // Enqueue a real outbox row, and release the claim if the insert fails
+    // so the next cron pass can retry instead of silently dropping the email.
+    await enqueueEmail(db, "order.abandoned_cart", { cartId: candidate.id }).catch(async (err) => {
+      await db
+        .update(cartSnapshots)
+        .set({ abandonedEmailSentAt: null, updatedAt: sql`CURRENT_TIMESTAMP` })
+        .where(eq(cartSnapshots.id, candidate.id))
+        .catch(() => {});
       logger.warn("cron.abandoned_enqueue_failed", {
         cartId: candidate.id,
         error: err instanceof Error ? err.message : String(err),

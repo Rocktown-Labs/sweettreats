@@ -7,6 +7,7 @@ import { releaseInventoryForOrder } from "@/lib/inventory";
 import { enqueueEmail } from "@/lib/outbox";
 import { INTEGRATION_KEY_IDS, resolveIntegrationKey } from "@/lib/secure-settings";
 import { logger } from "@/lib/logger";
+import { expectedCheckoutAmountCents, stripeAmountMatches } from "@/lib/stripe-amounts";
 import { publishAdminEvent } from "@/realtime/publish";
 
 export const Route = createFileRoute("/api/stripe/webhook")({
@@ -84,11 +85,8 @@ export const Route = createFileRoute("/api/stripe/webhook")({
             return new Response("OK", { status: 200 });
           }
           const amountTotal = session.amount_total ?? 0;
-          const expectedTotal =
-            order.totalCents > 0
-              ? order.totalCents
-              : order.subtotalCents + order.shippingCents + order.handlingCents;
-          if (amountTotal !== expectedTotal) {
+          const expectedTotal = expectedCheckoutAmountCents(order, session);
+          if (!stripeAmountMatches(order, session)) {
             logger.error("stripe.webhook_amount_mismatch", {
               orderId,
               expected: expectedTotal,

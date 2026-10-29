@@ -8,7 +8,7 @@ import {
   deleteMenuItem,
   getAdminDashboard,
   getAdminMenuItem,
-  getPickupLocations,
+  getAdminPickupLocations,
   saveMenuItem,
   uploadMenuPhoto,
 } from "../lib/api";
@@ -72,7 +72,7 @@ function AdminItemDetailPage() {
     (item as { stockByLocation?: { locationId: string; quantity: number }[] } | null)
       ?.stockByLocation ?? [],
   );
-  const fetchLocations = useServerFn(getPickupLocations);
+  const fetchLocations = useServerFn(getAdminPickupLocations);
   useEffect(() => {
     if (stockLocations.length > 0) {
       return;

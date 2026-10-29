@@ -7,13 +7,13 @@ import {
 } from "@sweettreats/ui/components/select";
 import { MapPin } from "lucide-react";
 
-import type { PickupLocation } from "../lib/api";
+import type { PublicPickupLocation } from "../lib/api";
 
 type LocationPickerProps = {
   id: string;
   value: string;
   onChange: (value: string) => void;
-  locations: PickupLocation[];
+  locations: PublicPickupLocation[];
   invalid?: boolean;
   describedBy?: string;
 };

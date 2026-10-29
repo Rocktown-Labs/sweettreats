@@ -52,14 +52,19 @@ export async function verifyOrderToken(
     // authorize every order. Production always sets BETTER_AUTH_SECRET.
     return false;
   }
-  if (!token) {
+  if (typeof token !== "string" || token.length === 0) {
     return false;
   }
   const expected = await signOrderId(orderId);
-  // Constant-time-ish comparison for a 32-char hex string.
-  let diff = expected.length ^ token.length;
-  for (let index = 0; index < Math.max(expected.length, token.length); index += 1) {
-    diff |= (expected.charCodeAt(index) || 0) ^ (token.charCodeAt(index) || 0);
+  // Tokens are always 32 hex chars. Reject any other length before the
+  // comparison so an attacker cannot force a loop proportional to an
+  // arbitrarily large request body (CPU DoS on the public order endpoint).
+  if (token.length !== expected.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let index = 0; index < expected.length; index += 1) {
+    diff |= expected.charCodeAt(index) ^ token.charCodeAt(index);
   }
   return diff === 0;
 }
