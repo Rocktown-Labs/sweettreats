@@ -79,8 +79,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           BETTER_AUTH_SECRET: ${{ env.STAGE_BETTER_AUTH_SECRET }}
           # Comma-separated bootstrap admins. Kept out of source; set the
-          # GitHub secret to the owner's verified address(es).
-          ADMIN_EMAILS: ${{ secrets.ADMIN_EMAILS }}
+          # GitHub secret to the owner's verified address(es). Production
+          # only: a preview must never receive the real admin roster.
+          ADMIN_EMAILS: ${{ env.STAGE == 'prod' && secrets.ADMIN_EMAILS || '' }}
           # Production-only integrations: previews deploy with these empty so
           # PR code can never touch live payment, email, or identity
           # credentials (or production data — previews get their own
