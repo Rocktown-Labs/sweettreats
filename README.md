@@ -25,7 +25,7 @@
 | Infrastructure | Alchemy and Cloudflare |
 | Workspace | Bun and Vite+ |
 
-At runtime, the application uses the Cloudflare `DB` binding defined by the infrastructure package. A local `DATABASE_URL`, when configured, is used for database tooling. Alchemy provisions the D1 database and applies migrations during local infrastructure development and deployment.
+At runtime, the application uses the Cloudflare `DB` binding defined by the infrastructure package. The Drizzle configuration loads `apps/web/.env` for schema and migration tooling; `bun run db:generate` generates migration artifacts and does not connect to a database. Alchemy provisions D1 and applies migrations during infrastructure development and deployment.
 
 ## 3. Storefront Capabilities
 
@@ -77,14 +77,19 @@ sweettreats/
 - Bun 1.3.14
 - Cloudflare / Alchemy credentials only when working with remote or deployed resources
 
-Install dependencies and start the workspaces:
+Install the dependencies:
 
 ```bash
 bun install
-bun run dev
 ```
 
-To start only the storefront, use `bun run dev:web`. For the Cloudflare local runtime, use `bun run dev:cf`. The application is available on the local development URL printed by the web workspace.
+The root `bun run dev` command starts local Alchemy infrastructure and the React Email preview; it does not start the storefront. To serve the storefront directly, run:
+
+```bash
+bun --filter web dev:bare
+```
+
+This starts the web application at `http://localhost:3001/`. For a local Cloudflare runtime, use the configured Cloudflare development script after setting up the required environment.
 
 Generate database migration artifacts with:
 
@@ -92,20 +97,19 @@ Generate database migration artifacts with:
 bun run db:generate
 ```
 
-Use example environment files as the source for local configuration. Do not commit `.env` files, provider tokens, or customer data.
+For local Alchemy development, create `apps/web/.env` and set `BETTER_AUTH_SECRET` to a stable random value (for example, generate one with `openssl rand -base64 32`). The application also reads local Worker secrets from `apps/web/.dev.vars` when running through Wrangler. No example environment file is tracked in this repository. Do not commit either file, provider tokens, or customer data.
 
 ## 6. Useful Commands
 
 | Command | Purpose |
 | --- | --- |
 | `bun run dev` | Start all configured development workspaces |
-| `bun run dev:web` | Start the storefront |
+| `bun --filter web dev:bare` | Start the storefront at `http://localhost:3001/` |
 | `bun run dev:cf` | Run the web app in the Cloudflare development runtime |
 | `bun run build` | Build configured workspaces |
 | `bun run check-types` | Run workspace type checks |
 | `bun run check` | Run Oxlint and Oxfmt |
 | `bun run test` | Run configured package tests |
-| `bun run test:e2e` | Run the web end-to-end suite |
 | `bun run db:generate` | Generate database migration artifacts |
 | `bun run deploy` | Deploy through the Alchemy infrastructure workspace |
 | `bun run destroy` | Destroy the selected infrastructure stage |
@@ -114,7 +118,7 @@ Use example environment files as the source for local configuration. Do not comm
 
 Cloudflare resources and deployment behavior are defined in `packages/infra`. The D1 database is created and migrated through Alchemy. Use the deployment scripts and the appropriate stage configuration for preview or production work; use `destroy` only for a stage you intend to remove.
 
-The app's schema and migrations live under `packages/db`. Runtime database access uses the Cloudflare binding, while local SQL tooling can use `DATABASE_URL` when it is configured.
+The app's schema and migrations live under `packages/db`. Runtime database access uses the Cloudflare `DB` binding. The Drizzle configuration loads `apps/web/.env`; generating migrations does not open a database connection.
 
 ## 8. Quality Checks
 
