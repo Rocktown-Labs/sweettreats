@@ -1,115 +1,135 @@
-# sweettreats
+# Sweet Treats Little Rock
 
-This project was created with [Better-T-Stack](https://github.com/AmanVarshney01/create-better-t-stack), a modern TypeScript stack that combines React, TanStack Start, Self, and more.
+<div align="center">
+  <h3>A Little Rock bakery storefront, from today's menu to pickup or shipping</h3>
+  <p>Browse treats, build an order, check out, and keep order details together in one customer account.</p>
+</div>
 
-## Features
+[sweettreatslr.com](https://sweettreatslr.com)
 
-- **TypeScript** - For type safety and improved developer experience
-- **TanStack Start** - SSR framework with TanStack Router
-- **TailwindCSS** - Utility-first CSS for rapid UI development
-- **Shared UI package** - shadcn/ui primitives live in `packages/ui`
-- **Drizzle** - TypeScript-first ORM
-- **Cloudflare D1** - Database engine
-- **Authentication** - Better Auth (self-hosted with SQLite/D1)
-- **Oxlint** - Oxlint + Oxfmt (linting & formatting)
-- **Vite+** - Unified Vite toolchain, workspace task runner, linting, and formatting
+---
 
-## Getting Started
+## 1. Product Overview
 
-First, install the dependencies:
+**Sweet Treats Little Rock** is an online storefront and order-management application for the Sweet Treats bakery. Customers can browse the catalog and daily menu, view item details, add products to a cart, complete checkout, and return to their order history. The admin workspace supports the operations behind that storefront, including items, daily menus, orders, customers, carts, locations, shipping, and store settings.
+
+## 2. System Architecture & Technology
+
+| Layer | Technologies |
+| --- | --- |
+| Web application | React, TanStack Start, TanStack Router |
+| Client data | TanStack Query and TanStack DB |
+| Database | Drizzle ORM with Cloudflare D1 / SQLite |
+| Authentication | Better Auth |
+| UI | Tailwind CSS v4 and shared shadcn-style components |
+| Infrastructure | Alchemy and Cloudflare |
+| Workspace | Bun and Vite+ |
+
+At runtime, the application uses the Cloudflare `DB` binding defined by the infrastructure package. The Drizzle configuration loads `apps/web/.env` for schema and migration tooling; `bun run db:generate` generates migration artifacts and does not connect to a database. Alchemy provisions D1 and applies migrations during infrastructure development and deployment.
+
+## 3. Storefront Capabilities
+
+### Customer shopping
+
+- Browse the product catalog and daily menu.
+- Open item pages for product details.
+- Add items to a persistent cart and proceed through checkout.
+- See order confirmation after a successful order.
+- Sign in or create an account and view previous orders.
+- Use location and shipping options configured by the store.
+
+### Store operations
+
+The administration area includes dedicated screens for:
+
+- **Catalog and items:** create and maintain products and item details.
+- **Daily menu:** manage the menu presented to customers.
+- **Orders:** review orders and inspect individual order details.
+- **Customers and carts:** look up customer records and active carts.
+- **Locations and shipping:** maintain store locations and fulfillment settings.
+- **Settings:** manage storefront configuration.
+
+### Notifications and live updates
+
+The web workspace includes a realtime notification center and publish/guard utilities. These support in-app operations notifications while keeping realtime event handling within the web application.
+
+## 4. Monorepo Structure
+
+```text
+sweettreats/
+├── apps/
+│   └── web/                 # Storefront, account pages, checkout, and admin tools
+├── packages/
+│   ├── config/              # Shared TypeScript configuration
+│   ├── db/                  # Drizzle schema and migrations
+│   ├── email/               # Email templates and delivery helpers
+│   ├── env/                 # Environment validation
+│   ├── infra/               # Alchemy and Cloudflare resources
+│   └── ui/                  # Shared UI primitives
+├── package.json
+└── bunfig.toml
+```
+
+## 5. Local Development
+
+### Prerequisites
+
+- Bun 1.3.14
+- Cloudflare / Alchemy credentials only when working with remote or deployed resources
+
+Install the dependencies:
 
 ```bash
 bun install
 ```
 
-## Database Setup
+For local Alchemy development, create `apps/web/.env` and set `BETTER_AUTH_SECRET` to a stable random value (for example, generate one with `openssl rand -base64 32`). The application also reads local Worker secrets from `apps/web/.dev.vars` when running through Wrangler. No example environment file is tracked in this repository. Do not commit either file, provider tokens, or customer data.
 
-This project uses Cloudflare D1 (SQLite) with Drizzle ORM.
+The root `bun run dev` command starts local Alchemy infrastructure and the React Email preview; it does not start the storefront. To serve the storefront directly, run:
 
-Runtime database access uses the Cloudflare `DB` binding from `packages/infra/alchemy.run.ts`. If a local `DATABASE_URL` is present, it is only for database tooling.
+```bash
+bun --filter web dev:bare
+```
 
-Alchemy provisions the D1 database and applies migrations during `dev` and `deploy`.
+This starts the web application at `http://localhost:3001/`. For a local Cloudflare runtime, use the configured Cloudflare development script after setting up the required environment.
 
-1. Generate migration files:
+Generate database migration artifacts with:
 
 ```bash
 bun run db:generate
 ```
 
-## Authentication Setup (Better Auth)
 
-- Better Auth runs directly on your Cloudflare D1 database.
-- Set `BETTER_AUTH_SECRET` in `apps/web/.env` (generate with `openssl rand -base64 32`).
-- Alchemy automatically provisions the D1 tables for Better Auth on deploy.
+## 6. Useful Commands
 
-Then, run the development server:
+| Command | Purpose |
+| --- | --- |
+| `bun run dev` | Start all configured development workspaces |
+| `bun --filter web dev:bare` | Start the storefront at `http://localhost:3001/` |
+| `bun run dev:cf` | Run the web app in the Cloudflare development runtime |
+| `bun run build` | Build configured workspaces |
+| `bun run check-types` | Run workspace type checks |
+| `bun run check` | Run Oxlint and Oxfmt |
+| `bun run test` | Run configured package tests |
+| `bun run db:generate` | Generate database migration artifacts |
+| `bun run deploy` | Deploy through the Alchemy infrastructure workspace |
+| `bun run destroy` | Destroy the selected infrastructure stage |
 
-```bash
-bun run dev
-```
+## 7. Deployment & Data
 
-Open [http://localhost:3001](http://localhost:3001) in your browser to see the fullstack application.
+Cloudflare resources and deployment behavior are defined in `packages/infra`. The D1 database is created and migrated through Alchemy. Use the deployment scripts and the appropriate stage configuration for preview or production work; use `destroy` only for a stage you intend to remove.
 
-## UI Customization
+The app's schema and migrations live under `packages/db`. Runtime database access uses the Cloudflare `DB` binding. The Drizzle configuration loads `apps/web/.env`; generating migrations does not open a database connection.
 
-React web apps in this stack share shadcn/ui primitives through `packages/ui`.
-
-- Change design tokens and global styles in `packages/ui/src/styles/globals.css`
-- Update shared primitives in `packages/ui/src/components/*`
-- Adjust shadcn aliases or style config in `packages/ui/components.json` and `apps/web/components.json`
-
-### Add more shared components
-
-Run this from the project root to add more primitives to the shared UI package:
+## 8. Quality Checks
 
 ```bash
-npx shadcn@latest add accordion dialog popover sheet table -c packages/ui
+bun run check
+bun run check-types
+bun run test
+bun run build
 ```
 
-Import shared components like this:
-
-```tsx
-import { Button } from "@sweettreats/ui/components/button";
-```
-
-### Add app-specific blocks
-
-If you want to add app-specific blocks instead of shared primitives, run the shadcn CLI from `apps/web`.
-
-## Deployment
-
-### Cloudflare via Alchemy
-
-- Target: web + server
-- Dev: bun run dev
-- Deploy: bun run deploy
-- Destroy: bun run destroy
-
-For more details, see the guide on [Deploying to Cloudflare with Alchemy](https://www.better-t-stack.dev/docs/guides/cloudflare-alchemy).
-
-## Git Hooks and Formatting
-
-- Run checks: `bun run check`
-
-## Project Structure
-
-```
-sweettreats/
-├── apps/
-│   └── web/         # Fullstack application (React + TanStack Start)
-├── packages/
-│   ├── ui/          # Shared shadcn/ui components and styles
-│   └── db/          # Database schema & queries
-```
-
-## Available Scripts
-
-- `bun run dev`: Start all applications in development mode
-- `bun run build`: Build all applications
-- `bun run dev:web`: Start only the web application
-- `bun run check-types`: Check TypeScript types across all apps
-- `bun run db:generate`: Generate database client/types
-- `bun run check`: Run Vite+ format/lint checks and workspace TypeScript checks
-- `bun run lint`: Run Vite+ lint checks
-- `bun run format`: Run Vite+ formatting
-- `bun run staged`: Run Vite+ checks against staged files
+<div align="center">
+  <sub>Made for Sweet Treats Little Rock and its customers.</sub>
+</div>
