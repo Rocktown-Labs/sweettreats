@@ -83,6 +83,8 @@ Install the dependencies:
 bun install
 ```
 
+For local Alchemy development, create `apps/web/.env` and set `BETTER_AUTH_SECRET` to a stable random value (for example, generate one with `openssl rand -base64 32`). The application also reads local Worker secrets from `apps/web/.dev.vars` when running through Wrangler. No example environment file is tracked in this repository. Do not commit either file, provider tokens, or customer data.
+
 The root `bun run dev` command starts local Alchemy infrastructure and the React Email preview; it does not start the storefront. To serve the storefront directly, run:
 
 ```bash
@@ -97,7 +99,6 @@ Generate database migration artifacts with:
 bun run db:generate
 ```
 
-For local Alchemy development, create `apps/web/.env` and set `BETTER_AUTH_SECRET` to a stable random value (for example, generate one with `openssl rand -base64 32`). The application also reads local Worker secrets from `apps/web/.dev.vars` when running through Wrangler. No example environment file is tracked in this repository. Do not commit either file, provider tokens, or customer data.
 
 ## 6. Useful Commands
 
